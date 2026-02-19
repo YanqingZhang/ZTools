@@ -69,6 +69,16 @@
                   <span class="toggle-slider"></span>
                 </label>
               </div>
+              <div class="settings-dropdown-item">
+                <div class="settings-item-info">
+                  <span class="settings-item-label">跟随启动</span>
+                  <span class="settings-item-desc">跟随主程序同时启动运行</span>
+                </div>
+                <label class="toggle">
+                  <input type="checkbox" :checked="isAutoStart" @change="toggleAutoStart" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
             </div>
           </Transition>
         </div>
@@ -443,6 +453,7 @@ const emit = defineEmits<{
 const showSettingsDropdown = ref(false)
 const isAutoKill = ref(false)
 const isAutoDetach = ref(false)
+const isAutoStart = ref(false)
 
 // 点击外部关闭下拉菜单
 function handleClickOutside(): void {
@@ -473,6 +484,15 @@ async function loadPluginSettings(): Promise<void> {
     }
   } catch (error) {
     console.debug('未找到 autoDetachPlugin 配置', error)
+  }
+
+  try {
+    const startData = await window.ztools.internal.dbGet('autoStartPlugin')
+    if (Array.isArray(startData)) {
+      isAutoStart.value = startData.includes(props.plugin.name)
+    }
+  } catch (error) {
+    console.debug('未找到 autoStartPlugin 配置', error)
   }
 }
 
@@ -520,6 +540,29 @@ async function toggleAutoDetach(): Promise<void> {
 
   await window.ztools.internal.dbPut('autoDetachPlugin', list)
   isAutoDetach.value = list.includes(props.plugin.name)
+}
+
+// 切换「跟随主程序同时启动运行」
+async function toggleAutoStart(): Promise<void> {
+  if (!props.plugin.name) return
+
+  let list: string[] = []
+  try {
+    const data = await window.ztools.internal.dbGet('autoStartPlugin')
+    if (Array.isArray(data)) list = data
+  } catch {
+    // ignore
+  }
+
+  const index = list.indexOf(props.plugin.name)
+  if (index >= 0) {
+    list.splice(index, 1)
+  } else {
+    list.push(props.plugin.name)
+  }
+
+  await window.ztools.internal.dbPut('autoStartPlugin', list)
+  isAutoStart.value = list.includes(props.plugin.name)
 }
 
 // Tab 状态
