@@ -153,7 +153,7 @@ class FloatingBallManager {
     const { width: screenWidth, height: screenHeight, x: workAreaX, y: workAreaY } =
       primaryDisplay.workArea
 
-    const x = workAreaX + screenWidth - BALL_SIZE - 8
+    const x = workAreaX + screenWidth - BALL_SIZE - 30
     const y = workAreaY + Math.floor(screenHeight / 2) - Math.floor(BALL_SIZE / 2)
 
     this.ballWindow = new BrowserWindow({
