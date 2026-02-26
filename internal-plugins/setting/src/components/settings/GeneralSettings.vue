@@ -334,6 +334,23 @@
 
       <div class="setting-item">
         <div class="setting-label">
+          <span>空格打开指令</span>
+          <span class="setting-desc">搜索框为空时按空格键打开选中的指令</span>
+        </div>
+        <div class="setting-control">
+          <label class="toggle">
+            <input
+              v-model="spaceOpenCommand"
+              type="checkbox"
+              @change="handleSpaceOpenCommandChange"
+            />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="setting-item">
+        <div class="setting-label">
           <span>Tab 键目标指令</span>
           <span class="setting-desc"
             >配置后在搜索框输入文字按 Tab 键可直接进入对应指令，常用于快速打开 AI
@@ -815,6 +832,9 @@ const searchMode = ref<'aggregate' | 'list'>('aggregate')
 // Tab 键目标指令
 const tabTargetCommand = ref('')
 
+// 空格打开指令
+const spaceOpenCommand = ref(false)
+
 // 悬浮球双击目标指令
 const floatingBallDoubleClickCommand = ref('')
 
@@ -1142,6 +1162,18 @@ async function handleSearchModeChange(): Promise<void> {
     console.log('搜索框模式已更新:', searchMode.value)
   } catch (error) {
     console.error('保存搜索框模式配置失败:', error)
+  }
+}
+
+// 处理空格打开指令变化
+async function handleSpaceOpenCommandChange(): Promise<void> {
+  try {
+    await saveSettings()
+    // 通知主渲染进程更新
+    await window.ztools.internal.updateSpaceOpenCommand(spaceOpenCommand.value)
+    console.log('空格打开指令已更新:', spaceOpenCommand.value)
+  } catch (error) {
+    console.error('保存空格打开指令失败:', error)
   }
 }
 
@@ -1696,6 +1728,8 @@ async function loadSettings(): Promise<void> {
       autoCheckUpdate.value = data.autoCheckUpdate ?? true
       // Tab 键目标指令
       tabTargetCommand.value = data.tabTargetCommand ?? ''
+      // 空格打开指令
+      spaceOpenCommand.value = data.spaceOpenCommand ?? false
       // 悬浮球双击目标指令
       floatingBallDoubleClickCommand.value = data.floatingBallDoubleClickCommand ?? ''
 
@@ -1772,6 +1806,7 @@ async function saveSettings(): Promise<void> {
       pinnedRows: pinnedRows.value,
       searchMode: searchMode.value,
       tabTargetCommand: tabTargetCommand.value,
+      spaceOpenCommand: spaceOpenCommand.value,
       floatingBallDoubleClickCommand: floatingBallDoubleClickCommand.value,
       floatingBallEnabled: floatingBallEnabled.value,
       floatingBallLetter: floatingBallLetter.value,

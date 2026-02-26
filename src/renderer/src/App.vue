@@ -627,6 +627,12 @@ onMounted(async () => {
     windowStore.updateTabTargetCommand(target)
   })
 
+  // 监听空格打开指令配置更新事件
+  window.ztools.onUpdateSpaceOpenCommand((enabled: boolean) => {
+    console.log('更新空格打开指令:', enabled)
+    windowStore.updateSpaceOpenCommand(enabled)
+  })
+
   // 监听悬浮球双击目标指令更新事件
   window.ztools.onUpdateFloatingBallDoubleClickCommand?.((command: string) => {
     console.log('更新悬浮球双击目标指令:', command)

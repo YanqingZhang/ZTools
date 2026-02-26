@@ -193,6 +193,7 @@ declare global {
         updatePinnedRows: (rows: number) => Promise<void>
         updateSearchMode: (searchMode: 'aggregate' | 'list') => Promise<void>
         updateTabTarget: (target: string) => Promise<void>
+        updateSpaceOpenCommand: (enabled: boolean) => Promise<void>
         updateFloatingBallDoubleClickCommand: (command: string) => Promise<void>
         setTheme: (theme: string) => Promise<void>
         updatePrimaryColor: (primaryColor: string, customColor?: string) => Promise<void>

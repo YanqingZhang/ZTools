@@ -709,6 +709,25 @@ async function handleKeydown(event: KeyboardEvent): Promise<void> {
     return
   }
 
+  // 处理空格键的特殊逻辑（开启了空格打开指令时）
+  if (event.key === ' ' && windowStore.spaceOpenCommand) {
+    event.preventDefault()
+    const item = selectedItem.value
+    if (item) {
+      const currentRow = grid[selectedRow.value]
+      if (currentRow.type === 'window') {
+        handleWindowAction(item)
+      } else if (currentRow.type === 'recommendation') {
+        handleRecommendationSelect(item)
+      } else if (currentRow.type?.startsWith('mainPush:') && currentRow.mainPushGroup) {
+        handleMainPushSelectAction(currentRow.mainPushGroup, item)
+      } else {
+        handleSelectApp(item)
+      }
+    }
+    return
+  }
+
   // 其他导航键交给 useNavigation 处理
   handleNavigationKeydown(event, () => {
     // 这个回调不会被调用，因为 Enter 键已经在上面处理了

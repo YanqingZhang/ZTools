@@ -58,6 +58,9 @@ export const useWindowStore = defineStore('window', () => {
   // Tab 键目标指令
   const tabTargetCommand = ref('')
 
+  // 空格打开指令
+  const spaceOpenCommand = ref(false)
+
   // 悬浮球双击目标指令
   const floatingBallDoubleClickCommand = ref('')
 
@@ -195,6 +198,10 @@ export const useWindowStore = defineStore('window', () => {
 
   function updateTabTargetCommand(value: string): void {
     tabTargetCommand.value = value
+  }
+
+  function updateSpaceOpenCommand(value: boolean): void {
+    spaceOpenCommand.value = value
   }
 
   function updateFloatingBallDoubleClickCommand(value: string): void {
@@ -512,6 +519,9 @@ export const useWindowStore = defineStore('window', () => {
         if (data.tabTargetCommand !== undefined) {
           tabTargetCommand.value = data.tabTargetCommand
         }
+        if (data.spaceOpenCommand !== undefined) {
+          spaceOpenCommand.value = data.spaceOpenCommand
+        }
         if (data.floatingBallDoubleClickCommand !== undefined) {
           floatingBallDoubleClickCommand.value = data.floatingBallDoubleClickCommand
         }
@@ -568,6 +578,8 @@ export const useWindowStore = defineStore('window', () => {
     updateSearchMode,
     tabTargetCommand,
     updateTabTargetCommand,
+    spaceOpenCommand,
+    updateSpaceOpenCommand,
     floatingBallDoubleClickCommand,
     updateFloatingBallDoubleClickCommand,
     updateTheme,

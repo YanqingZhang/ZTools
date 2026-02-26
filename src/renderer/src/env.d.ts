@@ -252,6 +252,7 @@ declare global {
       onUpdateRecentRows: (callback: (rows: number) => void) => void
       onUpdatePinnedRows: (callback: (rows: number) => void) => void
       onUpdateTabTarget: (callback: (target: string) => void) => void
+      onUpdateSpaceOpenCommand: (callback: (enabled: boolean) => void) => void
       onUpdateFloatingBallDoubleClickCommand?: (callback: (command: string) => void) => void
       onUpdateSearchMode: (callback: (mode: string) => void) => void
       onUpdatePrimaryColor: (

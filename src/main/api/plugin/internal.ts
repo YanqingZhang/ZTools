@@ -529,6 +529,16 @@ export class InternalPluginAPI {
       return { success: true }
     })
 
+    // 通知主渲染进程更新空格打开指令配置
+    ipcMain.handle('internal:update-space-open-command', async (event, enabled: boolean) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:update-space-open-command')
+      }
+      // 广播到主渲染进程
+      this.mainWindow?.webContents.send('update-space-open-command', enabled)
+      return { success: true }
+    })
+
     // 通知主渲染进程更新悬浮球双击目标指令
     ipcMain.handle(
       'internal:update-floating-ball-double-click-command',

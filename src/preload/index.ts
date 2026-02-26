@@ -181,6 +181,9 @@ const api = {
   onUpdateTabTarget: (callback: (target: string) => void) => {
     ipcRenderer.on('update-tab-target', (_event, target) => callback(target))
   },
+  onUpdateSpaceOpenCommand: (callback: (enabled: boolean) => void) => {
+    ipcRenderer.on('update-space-open-command', (_event, enabled) => callback(enabled))
+  },
   onUpdateFloatingBallDoubleClickCommand: (callback: (command: string) => void) => {
     ipcRenderer.on('update-floating-ball-double-click-command', (_event, command) =>
       callback(command)
