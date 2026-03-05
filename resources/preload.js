@@ -674,6 +674,16 @@ window.ztools = {
     getFloatingBallLetter: async () =>
       await electron.ipcRenderer.invoke('floating-ball:get-letter'),
 
+    // ==================== HTTP 服务 API ====================
+    httpServerGetConfig: async () =>
+      await electron.ipcRenderer.invoke('internal:http-server-get-config'),
+    httpServerSaveConfig: async (config) =>
+      await electron.ipcRenderer.invoke('internal:http-server-save-config', config),
+    httpServerRegenerateKey: async () =>
+      await electron.ipcRenderer.invoke('internal:http-server-regenerate-key'),
+    httpServerStatus: async () =>
+      await electron.ipcRenderer.invoke('internal:http-server-status'),
+
     // ==================== 调试日志 API ====================
     logEnable: async () => await electron.ipcRenderer.invoke('internal:log-enable'),
     logDisable: async () => await electron.ipcRenderer.invoke('internal:log-disable'),

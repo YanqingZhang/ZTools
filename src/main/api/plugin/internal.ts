@@ -4,6 +4,7 @@ import windowManager from '../../managers/windowManager.js'
 import logCollector from '../../core/logCollector.js'
 import detachedWindowManager from '../../core/detachedWindowManager.js'
 import floatingBallManager from '../../core/floatingBallManager.js'
+import httpServer from '../../core/httpServer.js'
 import superPanelManager from '../../core/superPanelManager.js'
 import aiModelsAPI from '../renderer/aiModels.js'
 import commandsAPI from '../renderer/commands.js'
@@ -797,6 +798,74 @@ export class InternalPluginAPI {
       }
       logCollector.addSubscriber(event.sender)
       return { success: true }
+    })
+
+    // ==================== HTTP 服务 API ====================
+    ipcMain.handle('internal:http-server-get-config', async (event) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:http-server-get-config')
+      }
+      try {
+        const config = httpServer.getConfig()
+        return { success: true, config }
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '获取配置失败'
+        }
+      }
+    })
+
+    ipcMain.handle(
+      'internal:http-server-save-config',
+      async (event, config: { enabled: boolean; port: number; apiKey: string }) => {
+        if (!requireInternalPlugin(this.pluginManager, event)) {
+          throw new PermissionDeniedError('internal:http-server-save-config')
+        }
+        try {
+          const wasRunning = httpServer.isRunning()
+          const savedConfig = await httpServer.saveConfig(config)
+
+          if (savedConfig.enabled && !wasRunning) {
+            httpServer.start()
+          } else if (!savedConfig.enabled && wasRunning) {
+            httpServer.stop()
+          } else if (savedConfig.enabled && wasRunning) {
+            httpServer.stop()
+            httpServer.start()
+          }
+
+          return { success: true, config: savedConfig }
+        } catch (error: unknown) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : '保存配置失败'
+          }
+        }
+      }
+    )
+
+    ipcMain.handle('internal:http-server-regenerate-key', async (event) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:http-server-regenerate-key')
+      }
+      try {
+        const newKey = httpServer.generateApiKey()
+        await httpServer.saveConfig({ apiKey: newKey })
+        return { success: true, apiKey: newKey }
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '重新生成密钥失败'
+        }
+      }
+    })
+
+    ipcMain.handle('internal:http-server-status', async (event) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:http-server-status')
+      }
+      return { success: true, running: httpServer.isRunning() }
     })
   }
 }

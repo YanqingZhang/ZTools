@@ -574,6 +574,14 @@ onMounted(async () => {
     })
   })
 
+  // 监听 HTTP API 设置搜索文本事件
+  window.ztools.onSetSearchText((text: string) => {
+    searchQuery.value = text
+    nextTick(() => {
+      searchBoxRef.value?.focus()
+    })
+  })
+
   // 监听显示插件占位区域事件（插件启动前）
   window.ztools.onShowPluginPlaceholder(() => {
     console.log('显示插件占位区域')

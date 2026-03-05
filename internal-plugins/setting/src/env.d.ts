@@ -366,6 +366,40 @@ declare global {
         pinApp: (app: any) => Promise<void>
         unpinApp: (appPath: string, featureCode?: string, name?: string) => Promise<void>
 
+        // HTTP 服务
+        httpServerGetConfig: () => Promise<{
+          success: boolean
+          config?: {
+            enabled: boolean
+            port: number
+            apiKey: string
+          }
+          error?: string
+        }>
+        httpServerSaveConfig: (config: {
+          enabled: boolean
+          port: number
+          apiKey: string
+        }) => Promise<{
+          success: boolean
+          config?: {
+            enabled: boolean
+            port: number
+            apiKey: string
+          }
+          error?: string
+        }>
+        httpServerRegenerateKey: () => Promise<{
+          success: boolean
+          apiKey?: string
+          error?: string
+        }>
+        httpServerStatus: () => Promise<{
+          success: boolean
+          running?: boolean
+          error?: string
+        }>
+
         // 调试日志
         logEnable: () => Promise<{ success: boolean }>
         logDisable: () => Promise<{ success: boolean }>

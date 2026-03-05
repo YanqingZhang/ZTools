@@ -237,6 +237,9 @@ const api = {
   // 子输入框相关
   notifySubInputChange: (text: string) => ipcRenderer.send('notify-sub-input-change', text),
   setSubInputValue: (text: string) => ipcRenderer.invoke('set-sub-input-value', text),
+  onSetSearchText: (callback: (text: string) => void) => {
+    ipcRenderer.on('set-search-text', (_event, text) => callback(text))
+  },
   onSetSubInputValue: (callback: (text: string) => void) => {
     ipcRenderer.on('set-sub-input-value', (_event, text) => callback(text))
   },

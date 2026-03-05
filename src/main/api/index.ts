@@ -37,6 +37,7 @@ import pluginUIAPI from './plugin/ui'
 import pluginWindowAPI from './plugin/window'
 import { setupImageAnalysisAPI } from './shared/imageAnalysis'
 
+import httpServer from '../core/httpServer'
 import superPanelManager from '../core/superPanelManager'
 
 /**
@@ -90,6 +91,11 @@ class APIManager {
 
     // 初始化软件更新API
     updaterAPI.init(mainWindow)
+
+    // 初始化 HTTP 服务
+    httpServer.init().catch((error) => {
+      console.error('[API] HTTP 服务初始化失败:', error)
+    })
 
     // 初始化超级面板管理器
     superPanelManager.init(mainWindow)

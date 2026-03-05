@@ -73,6 +73,9 @@
       <!-- 关于 -->
       <AboutPage v-if="activeMenu === 'about'" />
 
+      <!-- HTTP 服务 -->
+      <HttpService v-if="activeMenu === 'http-service'" />
+
       <!-- 调试日志 -->
       <DebugConsole v-if="activeMenu === 'debug'" />
     </div>
@@ -88,6 +91,7 @@ import DataManagement from './DataManagement.vue'
 import DebugConsole from './DebugConsole.vue'
 import GeneralSettings from './GeneralSettings.vue'
 import GlobalShortcuts from './GlobalShortcuts.vue'
+import HttpService from './HttpService.vue'
 import LocalLaunch from './LocalLaunch.vue'
 import PluginCenter from './PluginCenter.vue'
 import PluginInstaller from './PluginInstaller.vue'
@@ -131,6 +135,7 @@ interface MenuItem {
     | 'info'
     | 'terminal'
     | 'search'
+    | 'monitor'
   label: string
 }
 
@@ -147,7 +152,8 @@ const menuItems: MenuItem[] = [
   { id: 'local-launch', icon: 'folder', label: '本地启动' },
   { id: 'sync', icon: 'cloud', label: 'WebDAV 同步' },
   { id: 'debug', icon: 'terminal', label: '调试日志' },
-  { id: 'about', icon: 'info', label: '关于' }
+  { id: 'about', icon: 'info', label: '关于' },
+  { id: 'http-service', icon: 'monitor', label: 'HTTP 服务' }
 ]
 
 // 使用 computed 实现双向绑定

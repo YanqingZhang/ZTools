@@ -236,6 +236,7 @@ declare global {
       // 子输入框相关
       notifySubInputChange: (text: string) => void
       setSubInputValue: (text: string) => Promise<boolean>
+      onSetSearchText: (callback: (text: string) => void) => void
       onSetSubInputValue: (callback: (text: string) => void) => void
       onFocusSubInput: (callback: () => void) => void
       onSelectSubInput: (callback: () => void) => void
