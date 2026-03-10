@@ -83,6 +83,12 @@
           }
         }
       ]
+    },
+    {
+      "code": "color-picker",
+      "explain": "屏幕取色",
+      "icon": "color-picker.png",
+      "cmds": ["取色", "Color Picker", "屏幕取色"]
     }
   ]
 }

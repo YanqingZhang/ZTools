@@ -1,11 +1,12 @@
 import { exec } from 'child_process'
 import type { PluginManager } from '../../managers/pluginManager'
-import { BrowserWindow, clipboard, shell } from 'electron'
+import { BrowserWindow, clipboard, Notification, shell } from 'electron'
 import { promisify } from 'util'
 import { GLOBAL_SCROLLBAR_CSS } from '../../core/globalStyles'
 import windowManager from '../../managers/windowManager'
 import webSearchAPI from './webSearch'
 import databaseAPI from '../shared/database'
+import { ColorPicker } from '../../core/native/index.js'
 
 interface SystemCommandContext {
   mainWindow: Electron.BrowserWindow | null
@@ -76,6 +77,9 @@ export async function executeSystemCommand(
 
     case 'open-terminal':
       return handleOpenTerminal(ctx, execAsync)
+
+    case 'color-picker':
+      return handleColorPicker(ctx)
 
     default:
       // 处理网页快开搜索引擎 (web-search-{id})
@@ -382,4 +386,30 @@ async function handleOpenTerminal(
     }
   }
   return { success: false, error: `不支持的平台: ${process.platform}` }
+}
+
+function handleColorPicker(ctx: SystemCommandContext): Promise<any> {
+  console.log('[SystemCmd] 执行屏幕取色')
+  ctx.mainWindow?.hide()
+
+  return new Promise((resolve) => {
+    try {
+      ColorPicker.start((result) => {
+        if (result.success && result.hex) {
+          clipboard.writeText(result.hex)
+          console.log('[SystemCmd] 已复制颜色值:', result.hex)
+          if (Notification.isSupported()) {
+            new Notification({ title: 'ZTools', body: `已复制颜色值: ${result.hex}` }).show()
+          }
+          resolve({ success: true, hex: result.hex })
+        } else {
+          console.log('[SystemCmd] 取色已取消')
+          resolve({ success: false, error: '取色已取消' })
+        }
+      })
+    } catch (error) {
+      console.error('[SystemCmd] 取色失败:', error)
+      resolve({ success: false, error: String(error) })
+    }
+  })
 }
