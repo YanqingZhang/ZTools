@@ -3,8 +3,8 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useToast, AdaptiveIcon } from '@/components'
 import { compareVersions, upgradeInstalledPluginFromMarket, weightedSearch } from '@/utils'
 import { PluginDetail } from './components'
-import { useHistoryState, useZtoolsSubInput } from '@/composables'
-import { onBeforeRouteUpdate } from 'vue-router'
+import { useJumpFunction, useZtoolsSubInput } from '@/composables'
+import { PluginMarketSettingJumpFunction } from '@/views/PluginMarketSetting/PluginMarketSetting'
 
 const { success, error, confirm } = useToast()
 
@@ -238,20 +238,14 @@ function handleKeydown(e: KeyboardEvent): void {
   }
 }
 
-const handleJumpZtoolsCode = (): void => {
-  const state = useHistoryState<{ autoOpenPluginName: string }>()
+useJumpFunction<PluginMarketSettingJumpFunction>((state) => {
   if (state.autoOpenPluginName) {
     setSubInput(state.autoOpenPluginName)
   }
-}
-
-onBeforeRouteUpdate(() => {
-  handleJumpZtoolsCode()
 })
 
 onMounted(() => {
   fetchPlugins()
-  handleJumpZtoolsCode()
   window.addEventListener('keydown', handleKeydown, true)
 })
 
