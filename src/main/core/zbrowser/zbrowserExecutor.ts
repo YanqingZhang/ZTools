@@ -25,6 +25,7 @@ import type {
 import { ZBROWSER_DEVICES, type DeviceConfig } from './devices'
 import zbrowserManager from './zbrowserManager'
 import TurndownService from 'turndown'
+import devToolsShortcut from '../../utils/devToolsShortcut'
 
 /**
  * Electron 支持的键码映射表
@@ -1189,6 +1190,17 @@ export class ZBrowserExecutor {
 
     // 添加右键菜单支持（TODO: 可在后续阶段完善）
 
+    // 注册开发者工具快捷键
+    win.webContents.on('focus', () => {
+      if (win && !win.webContents.isDestroyed()) {
+        devToolsShortcut.register(win.webContents)
+      }
+    })
+
+    win.webContents.on('blur', () => {
+      devToolsShortcut.unregister()
+    })
+
     return win
   }
 
@@ -1329,6 +1341,7 @@ export class ZBrowserExecutor {
       const windowId = this._browserWindow.id
       this._browserWindow.once('closed', () => {
         zbrowserManager.removeIdleWindow(pluginName, windowId)
+        devToolsShortcut.unregister()
       })
     } else {
       // 不可见窗口 → 销毁
