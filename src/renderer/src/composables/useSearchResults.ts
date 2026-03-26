@@ -235,19 +235,10 @@ export function useSearchResults(props: {
 
     // 合并所有结果
     const allResults = [...bestSearchResults.value, ...bestMatches.value, ...recommendations.value]
+    const deduped = deduplicateResults(allResults)
 
-    if (!query) return allResults
-
-    // 去重
-    const seen = new Set<string>()
-    const deduped = allResults.filter((item) => {
-      const key = item.featureCode
-        ? `${item.path}:${item.featureCode}`
-        : `${item.name}|${item.path}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
+    // 无搜索词（如仅粘贴文本）时，返回去重后的原始顺序结果
+    if (!query) return deduped
 
     // 排序：完全匹配 > 前缀匹配 > 系统应用 > 其他
     return deduped.sort((a, b) => {
