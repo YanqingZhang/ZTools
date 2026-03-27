@@ -32,6 +32,12 @@
       "cmds": ["Shutdown", "关机"]
     },
     {
+      "code": "logoff",
+      "explain": "注销",
+      "icon": "logoff.png",
+      "cmds": ["Log Off", "Sign Out", "注销", "退出登录"]
+    },
+    {
       "code": "sleep",
       "explain": "睡眠",
       "icon": "sleep.png",

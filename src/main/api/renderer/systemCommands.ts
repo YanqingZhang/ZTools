@@ -50,6 +50,14 @@ export async function executeSystemCommand(
       }
       break
 
+    case 'logoff':
+      if (platform === 'darwin') {
+        cmd = 'osascript -e "tell application \\"System Events\\" to log out"'
+      } else if (platform === 'win32') {
+        cmd = 'shutdown /l'
+      }
+      break
+
     case 'sleep':
       if (platform === 'darwin') {
         cmd = 'osascript -e "tell application \\"System Events\\" to sleep"'
