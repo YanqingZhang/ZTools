@@ -54,19 +54,21 @@ async function exportPluginDocsToDir(pluginName: string, targetDir: string): Pro
   const keysResult = await databaseAPI.getPluginDocKeys(pluginName)
   if (!keysResult.success) return
   const keys: Array<{ key: string; type: string }> = keysResult.data || []
-  for (const item of keys) {
-    const docResult = await databaseAPI.getPluginDoc(pluginName, item.key)
-    if (docResult.success) {
-      const safeKey = item.key.replace(/[/\\:*?"<>|]/g, '_')
-      const filePath = path.join(targetDir, `${safeKey}.json`)
-      const content = JSON.stringify(
-        { key: item.key, type: item.type, data: docResult.data },
-        null,
-        2
-      )
-      fs.writeFileSync(filePath, content, 'utf-8')
-    }
-  }
+  await Promise.all(
+    keys.map(async (item) => {
+      const docResult = await databaseAPI.getPluginDoc(pluginName, item.key)
+      if (docResult.success) {
+        const safeKey = item.key.replace(/[/\\:*?"<>|]/g, '_')
+        const filePath = path.join(targetDir, `${safeKey}.json`)
+        const content = JSON.stringify(
+          { key: item.key, type: item.type, data: docResult.data },
+          null,
+          2
+        )
+        await fs.promises.writeFile(filePath, content, 'utf-8')
+      }
+    })
+  )
 }
 
 /**
@@ -300,7 +302,7 @@ export class InternalPluginAPI {
         const ts = formatTimestamp(new Date())
         const downloadsDir = app.getPath('downloads')
         const exportDir = path.join(downloadsDir, `${pluginName}-${ts}`)
-        fs.mkdirSync(exportDir, { recursive: true })
+        await fs.promises.mkdir(exportDir, { recursive: true })
         await exportPluginDocsToDir(pluginName, exportDir)
         shell.showItemInFolder(exportDir)
         return { success: true, folderPath: exportDir }
@@ -324,12 +326,12 @@ export class InternalPluginAPI {
         const ts = formatTimestamp(new Date())
         const downloadsDir = app.getPath('downloads')
         const rootDir = path.join(downloadsDir, `ztools-data-${ts}`)
-        fs.mkdirSync(rootDir, { recursive: true })
+        await fs.promises.mkdir(rootDir, { recursive: true })
 
         for (const plugin of plugins) {
           const safePluginName = plugin.pluginName.replace(/[/\\:*?"<>|]/g, '_')
           const pluginDir = path.join(rootDir, safePluginName)
-          fs.mkdirSync(pluginDir, { recursive: true })
+          await fs.promises.mkdir(pluginDir, { recursive: true })
           await exportPluginDocsToDir(plugin.pluginName, pluginDir)
         }
 
