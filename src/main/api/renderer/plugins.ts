@@ -850,6 +850,22 @@ export class PluginsAPI {
       plugins.splice(pluginIndex, 1)
       databaseAPI.dbPut('plugins', plugins)
 
+      const history: { pluginName: string }[] = databaseAPI.dbGet('command-history') || []
+      const newHistory = history.filter((item) => item.pluginName !== pluginInfo.name)
+      if (newHistory.length !== history.length) {
+        databaseAPI.dbPut('command-history', newHistory)
+        this.mainWindow?.webContents.send('history-changed')
+      }
+
+      const pinned: { pluginName: string }[] = databaseAPI.dbGet('pinned-commands') || []
+      const newPinned = pinned.filter((item) => item.pluginName !== pluginInfo.name)
+      if (newPinned.length !== pinned.length) {
+        databaseAPI.dbPut('pinned-commands', newPinned)
+        this.mainWindow?.webContents.send('pinned-changed')
+      }
+
+      await databaseAPI.clearPluginData(pluginInfo.name)
+
       this.mainWindow?.webContents.send('plugins-changed')
 
       if (!pluginInfo.isDevelopment) {
