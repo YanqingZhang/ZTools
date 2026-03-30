@@ -152,7 +152,7 @@ class WindowManager {
     // 强化置顶层级并允许在所有桌面和全屏应用上显示
     this.mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
     if (platform.isMacOS) {
-      this.mainWindow.setAlwaysOnTop(true, 'main-menu')
+      this.mainWindow.setAlwaysOnTop(true, 'modal-panel', 1)
     } else {
       this.mainWindow.setAlwaysOnTop(true)
     }
@@ -526,7 +526,7 @@ class WindowManager {
 
     // 2. macOS特殊处理：重申置顶，防止因为系统事件掉层级
     if (platform.isMacOS) {
-      this.mainWindow.setAlwaysOnTop(true, 'main-menu')
+      this.mainWindow.setAlwaysOnTop(true, 'modal-panel', 1)
       return
     }
 
