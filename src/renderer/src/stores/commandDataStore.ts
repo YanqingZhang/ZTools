@@ -178,7 +178,11 @@ export const useCommandDataStore = defineStore('commandData', () => {
   function getEnabledPluginPaths(plugins: any[], disabledPaths?: string[]): Set<string> {
     const paths = disabledPaths ?? disabledPluginPaths.value
     const disabledPluginPathSet = new Set(paths)
-    return new Set(plugins.filter((plugin: any) => !disabledPluginPathSet.has(plugin.path)).map((p: any) => p.path))
+    return new Set(
+      plugins
+        .filter((plugin: any) => !disabledPluginPathSet.has(plugin.path))
+        .map((p: any) => p.path)
+    )
   }
   // 搜索偏好记录（搜索词 -> 上次选中的指令标识）
   const searchPreference = ref<

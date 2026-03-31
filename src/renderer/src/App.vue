@@ -75,6 +75,22 @@ const pastedFilesData = ref<FileItem[] | null>(null)
 // 粘贴的文本数据
 const pastedTextData = ref<string | null>(null)
 
+// 将当前搜索输入和粘贴态同步到主进程，供应用快捷键启动时复用
+function syncLaunchContext(): void {
+  window.ztools.updateLaunchContext({
+    searchQuery: searchQuery.value,
+    pastedImage: pastedImageData.value,
+    pastedFiles: pastedFilesData.value
+      ? pastedFilesData.value.map((file) => ({
+          path: file.path,
+          name: file.name,
+          isDirectory: file.isDirectory
+        }))
+      : null,
+    pastedText: pastedTextData.value
+  })
+}
+
 // 处理搜索框输入变化（由 SearchBox @update:model-value 触发，仅用户输入会触发）
 function handleSearchQueryChange(value: string): void {
   searchQuery.value = value
@@ -109,6 +125,11 @@ watch(pastedTextData, (newValue) => {
     pastedImageData.value = null
     pastedFilesData.value = null
   }
+})
+
+// 监听搜索输入和粘贴态变化，同步到主进程
+watch([searchQuery, pastedImageData, pastedFilesData, pastedTextData], () => {
+  syncLaunchContext()
 })
 
 // 动态调整窗口高度
@@ -469,6 +490,8 @@ async function handleKeydown(event: KeyboardEvent): Promise<void> {
 
 // 初始化
 onMounted(async () => {
+  syncLaunchContext()
+
   // 从 store 加载设置和应用数据
   await Promise.all([
     windowStore.loadSettings(),

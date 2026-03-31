@@ -49,6 +49,26 @@ import superPanelManager from '../core/superPanelManager'
 import translationManager from '../core/translationManager'
 
 /**
+ * 快捷键触发时携带的文件输入
+ */
+interface ShortcutInputFile {
+  path: string
+  name: string
+  isDirectory: boolean
+  isFile?: boolean
+}
+
+/**
+ * 快捷键触发启动链路时使用的输入上下文
+ */
+interface ShortcutLaunchContext {
+  searchQuery: string
+  pastedImage: string | null
+  pastedFiles: ShortcutInputFile[] | null
+  pastedText: string | null
+}
+
+/**
  * API管理器 - 统一初始化和管理所有API模块
  */
 class APIManager {
@@ -263,7 +283,8 @@ class APIManager {
     plugin: any,
     feature: any,
     cmdLabel: string,
-    cmdType: string
+    cmdType: string,
+    context?: ShortcutLaunchContext
   ): Promise<void> {
     const launchOptions = {
       path: plugin.path,
@@ -271,7 +292,10 @@ class APIManager {
       featureCode: feature.code,
       name: cmdLabel,
       cmdType,
-      param: { code: feature.code }
+      param: {
+        ...this.buildShortcutLaunchParam(cmdType, context),
+        code: feature.code
+      }
     }
     console.log(`[API] 启动插件:`, launchOptions)
 
@@ -281,20 +305,25 @@ class APIManager {
   /**
    * 启动系统应用或系统设置（direct 类型指令）
    */
-  private async launchDirectCommand(command: any): Promise<void> {
+  private async launchDirectCommand(command: any, context?: ShortcutLaunchContext): Promise<void> {
     console.log('[API] 通过全局快捷键启动系统应用:', command.name, command.path)
     await appsAPI.launch({
       path: command.path,
       type: 'direct',
-      name: command.name
+      name: command.name,
+      cmdType: command.cmdType || 'text',
+      param: this.buildShortcutLaunchParam(command.cmdType || 'text', context)
     })
   }
 
   /**
    * 处理全局快捷键触发（供 windowManager 调用）
    */
-  public async handleGlobalShortcutTrigger(target: string): Promise<void> {
-    return this.handleGlobalShortcut(target)
+  public async handleGlobalShortcutTrigger(
+    target: string,
+    context?: ShortcutLaunchContext
+  ): Promise<void> {
+    return this.handleGlobalShortcut(target, context)
   }
 
   /**
@@ -303,7 +332,10 @@ class APIManager {
    *   - "插件名称/指令名称"（精确匹配指定插件）
    *   - "指令名称"（在所有插件和系统应用中搜索，若多个匹配则提示）
    */
-  private async handleGlobalShortcut(target: string): Promise<void> {
+  private async handleGlobalShortcut(
+    target: string,
+    context?: ShortcutLaunchContext
+  ): Promise<void> {
     try {
       const plugins: any = databaseAPI.dbGet('plugins')
       const disabledPlugins = pluginsAPI.getDisabledPluginSet()
@@ -338,7 +370,13 @@ class APIManager {
           return
         }
 
-        await this.launchMatchedPlugin(plugin, result.feature, result.cmdLabel, result.cmdType)
+        await this.launchMatchedPlugin(
+          plugin,
+          result.feature,
+          result.cmdLabel,
+          result.cmdType,
+          context
+        )
       } else {
         // 格式: 指令名称（在所有插件和系统应用中搜索）
         const cmdName = target
@@ -386,13 +424,65 @@ class APIManager {
         // 唯一匹配，直接启动
         if (pluginMatches.length === 1) {
           const { plugin, feature, cmdLabel, cmdType } = pluginMatches[0]
-          await this.launchMatchedPlugin(plugin, feature, cmdLabel, cmdType)
+          await this.launchMatchedPlugin(plugin, feature, cmdLabel, cmdType, context)
         } else if (directCommand) {
-          await this.launchDirectCommand(directCommand)
+          await this.launchDirectCommand(directCommand, context)
         }
       }
     } catch (error) {
       console.error('[API] 处理全局快捷键失败:', error)
+    }
+  }
+
+  /**
+   * 归一化来自渲染进程的快捷键启动上下文，保证 payload 构造逻辑可直接复用
+   */
+  private normalizeShortcutContext(context?: ShortcutLaunchContext): ShortcutLaunchContext {
+    return {
+      searchQuery: context?.searchQuery || '',
+      pastedImage: context?.pastedImage || null,
+      pastedFiles: context?.pastedFiles
+        ? context.pastedFiles.map((file) => ({
+            path: file.path,
+            name: file.name,
+            isDirectory: file.isDirectory,
+            isFile: file.isFile ?? !file.isDirectory
+          }))
+        : null,
+      pastedText: context?.pastedText || null
+    }
+  }
+
+  /**
+   * 按命令类型构造快捷键启动参数，使应用快捷键与搜索结果启动的入参模型一致
+   */
+  private buildShortcutLaunchParam(
+    cmdType?: string,
+    context?: ShortcutLaunchContext
+  ): {
+    payload: any
+    type: string
+    inputState: ShortcutLaunchContext
+  } {
+    const normalizedContext = this.normalizeShortcutContext(context)
+    const normalizedCmdType = cmdType || 'text'
+    let payload: any = normalizedContext.searchQuery
+
+    if (normalizedCmdType === 'img' && normalizedContext.pastedImage) {
+      payload = normalizedContext.pastedImage
+    } else if (
+      (normalizedCmdType === 'over' || normalizedCmdType === 'regex') &&
+      normalizedContext.pastedText
+    ) {
+      payload = normalizedContext.pastedText
+    } else if (normalizedCmdType === 'files' && normalizedContext.pastedFiles) {
+      payload = normalizedContext.pastedFiles
+    }
+
+    return {
+      payload,
+      type: normalizedCmdType,
+      inputState: normalizedContext
     }
   }
 }

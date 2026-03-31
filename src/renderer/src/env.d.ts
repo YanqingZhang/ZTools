@@ -35,6 +35,12 @@ declare global {
       launchAsAdmin: (appPath: string, name?: string) => Promise<void>
       hideWindow: () => void
       resizeWindow: (height: number) => void
+      updateLaunchContext: (context: {
+        searchQuery: string
+        pastedImage: string | null
+        pastedFiles: Array<{ path: string; name: string; isDirectory: boolean }> | null
+        pastedText: string | null
+      }) => void
       getWindowPosition: () => Promise<{ x: number; y: number }>
       setWindowPosition: (x: number, y: number) => void
       setWindowSizeLock: (lock: boolean) => void

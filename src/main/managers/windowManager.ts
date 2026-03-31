@@ -29,6 +29,26 @@ import pluginManager from './pluginManager'
 type WindowMaterial = 'mica' | 'acrylic' | 'none'
 
 /**
+ * 应用快捷键触发时携带的文件输入
+ */
+interface AppShortcutInputFile {
+  path: string
+  name: string
+  isDirectory: boolean
+  isFile?: boolean
+}
+
+/**
+ * 应用快捷键触发时携带的当前输入上下文
+ */
+interface AppShortcutLaunchContext {
+  searchQuery: string
+  pastedImage: string | null
+  pastedFiles: AppShortcutInputFile[] | null
+  pastedText: string | null
+}
+
+/**
  * 窗口管理器
  * 负责主窗口的创建、显示/隐藏、快捷键注册等
  */
@@ -60,6 +80,13 @@ class WindowManager {
   private suppressBlurHide: boolean = false // 临时抑制 blur 事件隐藏窗口（文件关联打开等场景）
   private lastBlurHideTime: number = 0 // blur 导致隐藏窗口的时间戳（用于解决托盘点击竞态）
   private appShortcuts: Map<string, string> = new Map() // 应用快捷键映射表 (快捷键 -> 目标指令)
+  // 应用快捷键触发时携带的当前输入上下文
+  private appShortcutLaunchContext: AppShortcutLaunchContext = {
+    searchQuery: '',
+    pastedImage: null,
+    pastedFiles: null,
+    pastedText: null
+  }
 
   /**
    * 更新焦点目标（供外部调用,如 pluginManager）
@@ -1107,9 +1134,21 @@ class WindowManager {
   private async handleAppShortcut(target: string): Promise<void> {
     try {
       // 调用 API 管理器的全局快捷键处理方法
-      await api.handleGlobalShortcutTrigger(target)
+      await api.handleGlobalShortcutTrigger(target, this.appShortcutLaunchContext)
     } catch (error) {
       console.error('[Window] 处理应用快捷键失败:', error)
+    }
+  }
+
+  /**
+   * 更新应用快捷键触发时要带给启动链路的输入上下文
+   */
+  public updateAppShortcutLaunchContext(context: Partial<AppShortcutLaunchContext>): void {
+    this.appShortcutLaunchContext = {
+      searchQuery: context.searchQuery ?? '',
+      pastedImage: context.pastedImage ?? null,
+      pastedFiles: context.pastedFiles ?? null,
+      pastedText: context.pastedText ?? null
     }
   }
 

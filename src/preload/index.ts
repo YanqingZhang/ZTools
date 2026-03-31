@@ -25,6 +25,12 @@ const api = {
     ipcRenderer.invoke('launch-as-admin', appPath, name),
   hideWindow: () => ipcRenderer.send('hide-window'),
   resizeWindow: (height: number) => ipcRenderer.send('resize-window', height),
+  updateLaunchContext: (context: {
+    searchQuery: string
+    pastedImage: string | null
+    pastedFiles: Array<{ path: string; name: string; isDirectory: boolean }> | null
+    pastedText: string | null
+  }) => ipcRenderer.send('update-launch-context', context),
   getWindowPosition: () => ipcRenderer.invoke('get-window-position'),
   setWindowPosition: (x: number, y: number) => ipcRenderer.send('set-window-position', x, y),
   setWindowSizeLock: (lock: boolean) => ipcRenderer.send('set-window-size-lock', lock),
@@ -439,6 +445,12 @@ declare global {
       }) => Promise<void>
       hideWindow: () => void
       resizeWindow: (height: number) => void
+      updateLaunchContext: (context: {
+        searchQuery: string
+        pastedImage: string | null
+        pastedFiles: Array<{ path: string; name: string; isDirectory: boolean }> | null
+        pastedText: string | null
+      }) => void
       setWindowOpacity: (opacity: number) => void
       getWindowMaterial: () => Promise<'mica' | 'acrylic' | 'none'>
       setTrayIconVisible: (visible: boolean) => Promise<void>

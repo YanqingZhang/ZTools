@@ -22,6 +22,7 @@ export class WindowAPI {
   private setupIPC(): void {
     ipcMain.on('hide-window', () => this.hideWindow())
     ipcMain.on('resize-window', (_event, height: number) => this.resizeWindow(height))
+    ipcMain.on('update-launch-context', (_event, context: any) => this.updateLaunchContext(context))
     ipcMain.handle('get-window-position', () => this.getWindowPosition())
     ipcMain.handle('get-window-material', () => this.getWindowMaterial())
     ipcMain.on('set-window-position', (_event, x: number, y: number) =>
@@ -152,6 +153,13 @@ export class WindowAPI {
   private openSettings(): void {
     windowManager.showSettings()
     console.log('[WindowAPI] 打开设置插件')
+  }
+
+  /**
+   * 更新主窗口当前输入上下文，供应用快捷键启动时复用
+   */
+  private updateLaunchContext(context: any): void {
+    windowManager.updateAppShortcutLaunchContext(context || {})
   }
 
   public async updateAutoBackToSearch(autoBackToSearch: string): Promise<void> {
