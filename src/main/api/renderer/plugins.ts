@@ -21,11 +21,13 @@ import webSearchAPI from './webSearch'
 import databaseAPI from '../shared/database'
 import pluginDeviceAPI from '../plugin/device'
 import {
+  applyDevProjectsOrderUpdate,
   buildInstalledDevelopmentPlugin,
   canPackageDevProject,
   DEV_PLUGIN_PROJECTS_DB_KEY,
   DEV_PLUGIN_REGISTRY_DB_KEY,
   getDevPluginLocalBindingsKey,
+  insertDevProjectAtTop,
   mergeLegacyDevelopmentProjects,
   migrateLegacyDevProjects,
   readDevProjectRecords,
@@ -163,6 +165,9 @@ export class PluginsAPI {
       this.importDevPlugin(pluginJsonPath)
     )
     ipcMain.handle('get-dev-projects', () => this.getDevProjects())
+    ipcMain.handle('update-dev-projects-order', (_event, pluginNames: string[]) =>
+      this.updateDevProjectsOrder(pluginNames)
+    )
     ipcMain.handle('remove-dev-project', (_event, pluginName: string) =>
       this.removeDevProject(pluginName)
     )
@@ -727,7 +732,10 @@ export class PluginsAPI {
       }
 
       const projects: any[] = []
-      for (const [name, project] of Object.entries(registry.projects)) {
+      const orderedProjects = Object.entries(registry.projects).sort(
+        ([, projectA], [, projectB]) => projectA.sortOrder - projectB.sortOrder
+      )
+      for (const [name, project] of orderedProjects) {
         const localBinding = localBindings.bindings[name]
         const localPath = localBinding?.projectPath ? path.resolve(localBinding.projectPath) : null
         const installedDevPlugin = devInstalledByName.get(name)
@@ -762,18 +770,28 @@ export class PluginsAPI {
             (projectPath && runningSet.has(projectPath)) ||
             (installedPath && runningSet.has(installedPath))
           ),
-          addedAt: project.addedAt
+          addedAt: project.addedAt,
+          sortOrder: project.sortOrder
         })
       }
 
-      return projects.sort((a, b) => {
-        const timeA = a.addedAt ? new Date(a.addedAt).getTime() : 0
-        const timeB = b.addedAt ? new Date(b.addedAt).getTime() : 0
-        return timeB - timeA
-      })
+      return projects
     } catch (error) {
       console.error('[Plugins] 获取开发项目列表失败:', error)
       return []
+    }
+  }
+
+  private async updateDevProjectsOrder(pluginNames: string[]): Promise<any> {
+    try {
+      const state = await this.readDevProjectState()
+      const nextRegistry = applyDevProjectsOrderUpdate(state.registry, pluginNames)
+      this.writeDevProjectState(nextRegistry, state.localBindings)
+      this.notifyPluginsChanged()
+      return { success: true }
+    } catch (error) {
+      console.error('[Plugins] 更新开发项目顺序失败:', error)
+      return { success: false, error: error instanceof Error ? error.message : '更新顺序失败' }
     }
   }
 
@@ -1290,6 +1308,8 @@ export class PluginsAPI {
       }
 
       const state = await this.readDevProjectState()
+      const projectName = pluginConfig.name
+      const hasExistingProject = Boolean(projectName && state.registry.projects[projectName])
       const upserted = upsertDevProjectFromConfig({
         registry: state.registry,
         localBindings: state.localBindings,
@@ -1299,7 +1319,11 @@ export class PluginsAPI {
       if (!upserted.success) {
         return { success: false, error: upserted.reason || '开发项目登记失败' }
       }
-      this.writeDevProjectState(upserted.registry, upserted.localBindings)
+      const nextRegistry =
+        !hasExistingProject && projectName
+          ? insertDevProjectAtTop(upserted.registry, projectName)
+          : upserted.registry
+      this.writeDevProjectState(nextRegistry, upserted.localBindings)
 
       // 输出新增的开发项目信息
       console.log('[Plugins] \n=== 新增开发项目 ===')

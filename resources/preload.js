@@ -678,6 +678,8 @@ window.ztools = {
     selectPluginFile: async () => await electron.ipcRenderer.invoke('internal:select-plugin-file'),
     importPlugin: async () => await electron.ipcRenderer.invoke('internal:import-plugin'),
     getDevProjects: async () => await electron.ipcRenderer.invoke('internal:get-dev-projects'),
+    updateDevProjectsOrder: async (pluginNames) =>
+      await electron.ipcRenderer.invoke('internal:update-dev-projects-order', pluginNames),
     readPluginInfoFromZpx: async (zpxPath) =>
       await electron.ipcRenderer.invoke('internal:read-plugin-info-from-zpx', zpxPath),
     installPluginFromPath: async (zpxPath) =>

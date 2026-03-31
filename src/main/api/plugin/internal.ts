@@ -237,6 +237,13 @@ export class InternalPluginAPI {
       return await (pluginsAPI as any).getDevProjects()
     })
 
+    ipcMain.handle('internal:update-dev-projects-order', async (event, pluginNames: string[]) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:update-dev-projects-order')
+      }
+      return await (pluginsAPI as any).updateDevProjectsOrder(pluginNames)
+    })
+
     ipcMain.handle('internal:remove-dev-project', async (event, pluginName: string) => {
       if (!requireInternalPlugin(this.pluginManager, event)) {
         throw new PermissionDeniedError('internal:remove-dev-project')

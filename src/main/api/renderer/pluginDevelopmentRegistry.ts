@@ -33,6 +33,8 @@ export interface DevProjectRegistryEntry {
   addedAt: string
   /** 最近一次刷新主记录快照的时间。 */
   updatedAt: string
+  /** 跨设备共享的展示顺序，数字越小越靠前。 */
+  sortOrder: number
 }
 
 export interface DevPluginRegistryDoc {
@@ -378,6 +380,102 @@ export function createEmptyDevPluginRegistryDoc(): DevPluginRegistryDoc {
 }
 
 /**
+ * 读取当前主记录中的项目名顺序，优先使用 sortOrder，缺失时按 addedAt 倒序兜底。
+ */
+function getOrderedProjectNames(projects: Record<string, DevProjectRegistryEntry>): string[] {
+  return Object.values(projects)
+    .sort((a, b) => {
+      const orderA = Number.isFinite(a.sortOrder) ? a.sortOrder : Number.MAX_SAFE_INTEGER
+      const orderB = Number.isFinite(b.sortOrder) ? b.sortOrder : Number.MAX_SAFE_INTEGER
+      if (orderA !== orderB) {
+        return orderA - orderB
+      }
+
+      const timeA = a.addedAt ? new Date(a.addedAt).getTime() : 0
+      const timeB = b.addedAt ? new Date(b.addedAt).getTime() : 0
+      return timeB - timeA
+    })
+    .map((item) => item.name)
+}
+
+/**
+ * 根据传入顺序重写主记录中的 sortOrder。
+ * 未出现在请求中的项目会按当前顺序追加到末尾，避免陈旧客户端覆盖掉新项目。
+ */
+export function applyDevProjectsOrderUpdate(
+  registry: DevPluginRegistryDoc,
+  pluginNames: string[]
+): DevPluginRegistryDoc {
+  const currentNames = getOrderedProjectNames(registry.projects)
+  const currentNameSet = new Set(currentNames)
+
+  for (const name of pluginNames) {
+    if (!currentNameSet.has(name)) {
+      throw new Error(`Unknown dev project: ${name}`)
+    }
+  }
+
+  const mergedNames = [
+    ...pluginNames,
+    ...currentNames.filter((name) => !pluginNames.includes(name))
+  ]
+  const nextProjects: Record<string, DevProjectRegistryEntry> = {}
+
+  for (const [index, name] of mergedNames.entries()) {
+    const current = registry.projects[name]
+    if (!current) {
+      continue
+    }
+    nextProjects[name] = {
+      ...current,
+      sortOrder: index
+    }
+  }
+
+  return {
+    version: registry.version,
+    projects: nextProjects
+  }
+}
+
+/**
+ * 将指定项目提升到共享顺序的顶部。
+ */
+export function insertDevProjectAtTop(
+  registry: DevPluginRegistryDoc,
+  projectName: string
+): DevPluginRegistryDoc {
+  const orderedNames = getOrderedProjectNames(registry.projects).filter(
+    (name) => name !== projectName
+  )
+  const nextProjects: Record<string, DevProjectRegistryEntry> = {
+    ...registry.projects
+  }
+
+  if (!nextProjects[projectName]) {
+    return registry
+  }
+
+  const nextOrder = [projectName, ...orderedNames]
+
+  for (const [index, name] of nextOrder.entries()) {
+    const current = nextProjects[name]
+    if (!current) {
+      continue
+    }
+    nextProjects[name] = {
+      ...current,
+      sortOrder: index
+    }
+  }
+
+  return {
+    version: registry.version,
+    projects: nextProjects
+  }
+}
+
+/**
  * 创建空的当前设备本地绑定文档。
  */
 export function createEmptyDevPluginLocalBindingsDoc(deviceId: string): DevPluginLocalBindingsDoc {
@@ -401,6 +499,7 @@ export function readDevPluginRegistryDoc(raw: unknown): DevPluginRegistryDoc {
     return emptyDoc
 
   const projects: Record<string, DevProjectRegistryEntry> = {}
+  const pendingSortOrders = new Map<string, number | null>()
   const fallbackTimestamp = nowIsoString()
   for (const [name, entry] of Object.entries(doc.projects as Record<string, any>)) {
     if (!name || BUILT_IN_PLUGIN_NAMES.has(name)) continue
@@ -418,8 +517,20 @@ export function readDevPluginRegistryDoc(raw: unknown): DevPluginRegistryDoc {
       name,
       configSnapshot: { ...(entry.configSnapshot as PluginConfigLite) },
       addedAt: normalizeIsoTimestamp(entry.addedAt, fallbackTimestamp),
-      updatedAt: normalizeIsoTimestamp(entry.updatedAt, fallbackTimestamp)
+      updatedAt: normalizeIsoTimestamp(entry.updatedAt, fallbackTimestamp),
+      sortOrder: -1
     }
+    pendingSortOrders.set(name, Number.isFinite(entry.sortOrder) ? Number(entry.sortOrder) : null)
+  }
+
+  const fallbackOrderedNames = Object.values(projects)
+    .sort((a, b) => new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime())
+    .map((item) => item.name)
+  const fallbackSortOrder = new Map(fallbackOrderedNames.map((name, index) => [name, index]))
+
+  for (const [name, project] of Object.entries(projects)) {
+    const explicitOrder = pendingSortOrders.get(name)
+    project.sortOrder = explicitOrder ?? fallbackSortOrder.get(name) ?? Number.MAX_SAFE_INTEGER
   }
 
   return {
@@ -547,7 +658,8 @@ export function migrateLegacyDevProjects(options: DevProjectMigrationOptions): {
       name,
       configSnapshot: { ...config },
       addedAt: entry.addedAt,
-      updatedAt: operationTimestamp
+      updatedAt: operationTimestamp,
+      sortOrder: Object.keys(registryProjects).length
     }
 
     bindingProjects[name] = {
@@ -623,7 +735,8 @@ export function upsertDevProjectFromConfig(
       name: projectName,
       configSnapshot: { ...options.pluginConfig },
       addedAt: existing?.addedAt ?? operationTimestamp,
-      updatedAt: operationTimestamp
+      updatedAt: operationTimestamp,
+      sortOrder: existing?.sortOrder ?? Object.keys(options.registry.projects).length
     }
   }
   const nextBindings: Record<string, DevProjectLocalBinding> = {

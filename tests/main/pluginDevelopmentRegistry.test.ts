@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  applyDevProjectsOrderUpdate,
   buildInstalledDevelopmentPlugin,
   canPackageDevProject,
   getDevPluginLocalBindingsKey,
+  insertDevProjectAtTop,
   mergeLegacyDevelopmentProjects,
   migrateLegacyDevProjects,
   normalizeDevelopmentProject,
@@ -344,5 +346,126 @@ describe('pluginDevelopmentRegistry', () => {
       updatedAt: '2026-03-29T02:00:00.000Z',
       lastError: '项目未绑定到当前设备路径'
     })
+  })
+
+  it('falls back to addedAt order when sortOrder is missing', () => {
+    const registry = readDevPluginRegistryDoc({
+      version: 2,
+      projects: {
+        alpha: {
+          name: 'alpha',
+          configSnapshot: { name: 'alpha', version: '1.0.0' },
+          addedAt: '2026-03-29T00:00:00.000Z',
+          updatedAt: '2026-03-29T00:00:00.000Z'
+        },
+        beta: {
+          name: 'beta',
+          configSnapshot: { name: 'beta', version: '1.0.0' },
+          addedAt: '2026-03-29T01:00:00.000Z',
+          updatedAt: '2026-03-29T01:00:00.000Z'
+        }
+      }
+    })
+
+    expect(Object.values(registry.projects).map((item) => item.sortOrder)).toEqual([1, 0])
+  })
+
+  it('appends unseen projects when applying a stale order payload', () => {
+    const next = applyDevProjectsOrderUpdate(
+      {
+        version: 2,
+        projects: {
+          alpha: {
+            name: 'alpha',
+            configSnapshot: { name: 'alpha' },
+            addedAt: '',
+            updatedAt: '',
+            sortOrder: 1
+          },
+          beta: {
+            name: 'beta',
+            configSnapshot: { name: 'beta' },
+            addedAt: '',
+            updatedAt: '',
+            sortOrder: 0
+          },
+          gamma: {
+            name: 'gamma',
+            configSnapshot: { name: 'gamma' },
+            addedAt: '',
+            updatedAt: '',
+            sortOrder: 2
+          }
+        }
+      },
+      ['alpha', 'beta']
+    )
+
+    expect(
+      Object.values(next.projects)
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((item) => item.name)
+    ).toEqual(['alpha', 'beta', 'gamma'])
+  })
+
+  it('moves a newly imported project to the top of the shared order', () => {
+    const next = insertDevProjectAtTop(
+      {
+        version: 2,
+        projects: {
+          alpha: {
+            name: 'alpha',
+            configSnapshot: { name: 'alpha' },
+            addedAt: '',
+            updatedAt: '',
+            sortOrder: 0
+          },
+          beta: {
+            name: 'beta',
+            configSnapshot: { name: 'beta' },
+            addedAt: '',
+            updatedAt: '',
+            sortOrder: 1
+          }
+        }
+      },
+      'beta'
+    )
+
+    expect(next.projects.beta?.sortOrder).toBe(0)
+    expect(next.projects.alpha?.sortOrder).toBe(1)
+  })
+
+  it('keeps the top-inserted order stable after a reorder payload is applied', () => {
+    const inserted = insertDevProjectAtTop(
+      {
+        version: 2,
+        projects: {
+          alpha: {
+            name: 'alpha',
+            configSnapshot: { name: 'alpha' },
+            addedAt: '',
+            updatedAt: '',
+            sortOrder: 0
+          },
+          beta: {
+            name: 'beta',
+            configSnapshot: { name: 'beta' },
+            addedAt: '',
+            updatedAt: '',
+            sortOrder: 1
+          }
+        }
+      },
+      'beta'
+    )
+
+    const reordered = applyDevProjectsOrderUpdate(inserted, ['alpha', 'beta'])
+
+    expect(
+      Object.values(reordered.projects)
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((item) => item.name)
+    ).toEqual(['alpha', 'beta'])
   })
 })
