@@ -68,6 +68,16 @@ export class AppsAPI {
     return this.launchParam
   }
 
+  public invalidateCommandsCache(notifyRenderer = false): void {
+    this.cachedCommandsResult = null
+    console.log('[Commands] 指令缓存已清空:', { notifyRenderer })
+
+    if (notifyRenderer) {
+      console.log('[Commands] 发送 apps-changed 通知，触发主窗口重载指令与 alias 搜索索引')
+      this.notifyRenderer('apps-changed')
+    }
+  }
+
   /**
    * 根据名称查找直接启动指令（系统应用、系统设置等）
    */
@@ -116,11 +126,8 @@ export class AppsAPI {
    */
   public setLocalAppSearch(enabled: boolean): void {
     this.isLocalAppSearchEnabled = enabled
-    this.cachedCommandsResult = null
+    this.invalidateCommandsCache(true)
     console.log('[Commands] 本地应用搜索已' + (enabled ? '开启' : '关闭'))
-
-    // 通知渲染进程应用列表已更新
-    this.notifyRenderer('apps-changed')
   }
 
   /**
@@ -271,11 +278,8 @@ export class AppsAPI {
     console.log('[Commands] 开始刷新应用缓存...')
     try {
       await this.scanAndCacheApps()
-      this.cachedCommandsResult = null
+      this.invalidateCommandsCache(true)
       console.log('[Commands] 应用缓存刷新成功')
-
-      // 通知渲染进程应用列表已更新
-      this.notifyRenderer('apps-changed')
     } catch (error) {
       console.error('[Commands] 刷新应用缓存失败:', error)
     }
@@ -1066,9 +1070,9 @@ export class AppsAPI {
   }
 
   /**
-   * 获取所有指令（供 AllCommands 页面使用）
+   * 获取所有指令（供 AllCommands 页面和设置页 alias 目标选择使用）
    * 返回处理后的 commands、regexCommands 和 plugins
-   * 结果会被缓存，直到应用列表或插件发生变化时清除
+   * 结果会被缓存，直到应用列表、插件状态或 alias 映射发生变化时清除
    */
   private async getCommands(): Promise<{
     commands: any[]
@@ -1077,9 +1081,11 @@ export class AppsAPI {
   }> {
     // 命中缓存直接返回
     if (this.cachedCommandsResult) {
+      console.log('[Commands] 命中指令缓存，直接返回 getCommands 结果')
       return this.cachedCommandsResult
     }
 
+    console.log('[Commands] 指令缓存未命中，开始重建 getCommands 结果')
     try {
       const rawApps = await this.getApps()
 
@@ -1184,6 +1190,11 @@ export class AppsAPI {
 
       const result = { commands, regexCommands, plugins }
       this.cachedCommandsResult = result
+      console.log('[Commands] 指令列表重建完成:', {
+        commands: commands.length,
+        regexCommands: regexCommands.length,
+        plugins: plugins.length
+      })
       return result
     } catch (error) {
       console.error('[Commands] 获取指令列表失败:', error)

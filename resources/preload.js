@@ -789,7 +789,12 @@ window.ztools = {
     quitApp: async () => await electron.ipcRenderer.invoke('internal:quit-app'),
 
     // ==================== 指令管理 API ====================
+    // 返回设置插件使用的原始指令快照，用于构建 alias 可选目标列表。
+    // 这里返回的是主进程整理后的 canonical commands，不包含主窗口搜索阶段注入的 alias 搜索字段。
     getCommands: async () => await electron.ipcRenderer.invoke('internal:get-commands'),
+    // 保存完整 alias store。主进程会负责归一化、持久化，并触发 commands cache 失效与主窗口刷新。
+    updateCommandAliases: async (aliases) =>
+      await electron.ipcRenderer.invoke('internal:update-command-aliases', aliases),
 
     // ==================== 本地启动管理 API ====================
     localShortcuts: {

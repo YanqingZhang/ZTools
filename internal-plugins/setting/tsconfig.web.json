@@ -4,13 +4,15 @@
     "src/env.d.ts",
     "src/**/*",
     "src/**/*.vue",
-    "src-electron/preload/*.d.ts"
+    "src-electron/preload/*.d.ts",
+    "../../src/shared/**/*"
   ],
   "compilerOptions": {
     "composite": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@shared/*": ["../../src/shared/*"]
     },
     "types": ["@ztools-center/ztools-api-types"]
   }

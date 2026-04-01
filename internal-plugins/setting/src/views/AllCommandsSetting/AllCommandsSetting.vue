@@ -5,7 +5,11 @@ import { weightedSearch } from '@/utils'
 import { AdaptiveIcon, CommandTag, FeatureCard, TagDropdown, CommandCard } from '@/components'
 import type { TagDropdownMenuItem } from '@/components'
 import { useZtoolsSubInput } from '@/composables'
-import { jumpFunctionShortcutsSetting } from '@/views/ShortcutsSetting/ShortcutsSetting'
+import {
+  jumpFunctionShortcutsSetting,
+  type ShortcutsSettingAliasDraftTarget
+} from '@/views/ShortcutsSetting/ShortcutsSetting'
+import { getCommandId as _getCommandId } from '@shared/commandShared'
 
 // 定义 Command 类型（从 commandDataStore 复制）
 export type CommandType = 'direct' | 'plugin' | 'builtin'
@@ -66,7 +70,38 @@ function getCommandId(
   cmdName: string,
   cmdType: string
 ): string {
-  return `${pluginName}:${featureCode}:${cmdName}:${cmdType}`
+  return _getCommandId({
+    pluginName,
+    featureCode,
+    name: cmdName,
+    cmdType
+  })
+}
+
+function buildAliasDraftTarget(
+  pluginName: string,
+  featureCode: string,
+  cmdName: string
+): ShortcutsSettingAliasDraftTarget {
+  const pluginTitle = selectedSource.value?.title || pluginName
+  const commandIcon = commands.value.find(
+    (command) =>
+      command.path === selectedSource.value?.path &&
+      command.featureCode === featureCode &&
+      command.name === cmdName &&
+      command.cmdType === 'text'
+  )?.icon
+
+  // 路由状态只保留 alias 草稿所需的最小字段，避免把完整 command 对象塞进 history state
+  return {
+    commandId: getCommandId(pluginName, featureCode, cmdName, 'text'),
+    pluginName,
+    pluginTitle,
+    featureCode,
+    cmdName,
+    cmdType: 'text',
+    icon: commandIcon || selectedSource.value?.logo
+  }
 }
 
 // 检查指令是否被禁用
@@ -392,6 +427,13 @@ function getMenuItems(
         label: '设置全局快捷键',
         icon: 'i-z-keyboard'
       })
+
+      // alias 只对插件文本指令开放；direct / builtin / regex 等类型不走这条设置路径
+      items.push({
+        key: 'custom-alias',
+        label: '自定义别名',
+        icon: 'i-z-alias'
+      })
     }
   }
 
@@ -404,6 +446,14 @@ function getMenuItems(
   })
 
   return items
+}
+
+function openAliasShortcut(pluginName: string, featureCode: string, cmdName: string): void {
+  // 统一从“所有指令”跳转到 alias tab，并预先带上当前指令作为草稿目标
+  jumpFunctionShortcutsSetting({
+    tab: 'alias',
+    draftTarget: buildAliasDraftTarget(pluginName, featureCode, cmdName)
+  })
 }
 
 // 处理下拉菜单选择
@@ -431,6 +481,9 @@ async function handleMenuSelect(
     jumpFunctionShortcutsSetting({
       payload: `${pluginTitle}/${cmdName}`
     })
+  } else if (key === 'custom-alias') {
+    // 这里只负责导航到设置页，不直接做 alias 持久化
+    openAliasShortcut(pluginName, featureCode, cmdName)
   }
 }
 
@@ -871,37 +924,37 @@ onMounted(async () => {
               :key="feature.code"
               :feature="feature"
             >
-              <TagDropdown
-                v-for="(cmd, idx) in feature.textCmds"
-                :key="idx"
-                :menu-items="
-                  getMenuItems(
-                    isCommandDisabled(selectedSource?.name || '', feature.code, cmd.name, 'text'),
-                    'text',
-                    selectedSource?.name || '',
-                    feature.code,
-                    cmd.name
-                  )
-                "
-                @select="
-                  (key) =>
-                    handleMenuSelect(
-                      key,
+              <div v-for="(cmd, idx) in feature.textCmds" :key="idx" class="feature-command-row">
+                <TagDropdown
+                  :menu-items="
+                    getMenuItems(
+                      isCommandDisabled(selectedSource?.name || '', feature.code, cmd.name, 'text'),
+                      'text',
                       selectedSource?.name || '',
                       feature.code,
-                      cmd.name,
-                      'text'
+                      cmd.name
                     )
-                "
-              >
-                <CommandTag
-                  :command="cmd"
-                  :disabled="
-                    isCommandDisabled(selectedSource?.name || '', feature.code, cmd.name, 'text')
                   "
-                  show-arrow
-                />
-              </TagDropdown>
+                  @select="
+                    (key) =>
+                      handleMenuSelect(
+                        key,
+                        selectedSource?.name || '',
+                        feature.code,
+                        cmd.name,
+                        'text'
+                      )
+                  "
+                >
+                  <CommandTag
+                    :command="cmd"
+                    :disabled="
+                      isCommandDisabled(selectedSource?.name || '', feature.code, cmd.name, 'text')
+                    "
+                    show-arrow
+                  />
+                </TagDropdown>
+              </div>
             </FeatureCard>
           </template>
         </div>
@@ -955,7 +1008,7 @@ onMounted(async () => {
   </div>
 </template>
 
-<style scoped>
+<style lang="less" scoped>
 .all-commands-container {
   display: flex;
   height: 100%;
@@ -1457,7 +1510,12 @@ onMounted(async () => {
   color: var(--purple-color);
 }
 
-/* === 空状态 === */
+.feature-command-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .empty-state {
   position: absolute;
   inset: 0;

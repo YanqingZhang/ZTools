@@ -3,31 +3,28 @@
  * 提取自 commandDataStore.ts，便于单元测试
  */
 
+import { getCommandId as _getCommandId, type CommandIdLike } from '@shared/commandShared'
+
 interface MatchInfo {
   indices: Array<[number, number]>
   value: string
   key: string
 }
 
-interface CommandLike {
-  name: string
+interface CommandLike extends CommandIdLike {
   path: string
-  pluginName?: string
   pluginSource?: 'installed' | 'development'
   devBadge?: 'DEV'
-  featureCode?: string
-  cmdType?: string
   subType?: string
   [key: string]: any
 }
 
 /**
  * 生成指令唯一标识（与设置插件保持一致）
- * 格式: pluginName:pluginSource:featureCode:cmdName:cmdType
+ * 格式: pluginName:featureCode:cmdName:cmdType
  */
-export function getCommandId(cmd: CommandLike): string {
-  const cmdType = cmd.cmdType || 'text'
-  return `${cmd.pluginName || ''}:${cmd.pluginSource || ''}:${cmd.featureCode || ''}:${cmd.name}:${cmdType}`
+export function getCommandId(cmd: CommandIdLike): string {
+  return _getCommandId(cmd)
 }
 
 /**

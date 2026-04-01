@@ -1,9 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useToast, ShortcutEditor } from '@/components'
+import { computed, nextTick, onMounted, ref } from 'vue'
+import { useToast, ShortcutEditor, AdaptiveIcon } from '@/components'
 import { weightedSearch } from '@/utils'
 import { useJumpFunction, useZtoolsSubInput } from '@/composables'
-import { ShortcutsSettingJumpFunction } from '@/views/ShortcutsSetting/ShortcutsSetting'
+import type {
+  ShortcutsSettingAliasCommandOption,
+  ShortcutsSettingAliasDialogState,
+  ShortcutsSettingAliasDraftTarget,
+  ShortcutsSettingJumpFunction,
+  ShortcutsSettingTab
+} from '@/views/ShortcutsSetting/ShortcutsSetting'
+import {
+  COMMAND_ALIASES_KEY,
+  getCommandId as _getCommandId,
+  normalizeCommandAliases
+} from '@shared/commandShared'
+import type { CommandAliasEntry, CommandAliasStore } from '@shared/commandShared'
+import AliasMappingDialog from './components/AliasMappingDialog.vue'
 
 const { success, error, warning, confirm } = useToast()
 
@@ -19,6 +32,16 @@ interface GlobalShortcut {
 type BuiltInShortcutKey = 'search' | 'closePlugin' | 'killPlugin'
 
 type BuiltInShortcutConfig = Record<BuiltInShortcutKey, boolean>
+
+interface AliasRow {
+  id: string
+  commandId: string
+  alias: string
+  icon?: string
+  target: ShortcutsSettingAliasCommandOption | null
+  targetLabel: string
+  missingTarget: boolean
+}
 
 const DEFAULT_BUILTIN_SHORTCUTS_ENABLED: BuiltInShortcutConfig = {
   search: true,
@@ -88,7 +111,6 @@ const builtInAppShortcuts = computed<GlobalShortcut[]>(() => {
   if (!modifier) return []
 
   return baseBuiltInShortcuts.map((item) => {
-    // 开发者工具快捷键需要特殊处理
     if (item.shortcut === 'DEVTOOLS') {
       return {
         ...item,
@@ -103,23 +125,29 @@ const builtInAppShortcuts = computed<GlobalShortcut[]>(() => {
   })
 })
 
-// Tab 切换
-const activeTab = ref<'global' | 'app'>('global')
-
-// 全局快捷键列表
+const activeTab = ref<ShortcutsSettingTab>('global')
 const globalShortcuts = ref<GlobalShortcut[]>([])
-// 应用快捷键列表
 const appShortcuts = ref<GlobalShortcut[]>([])
 const isDeleting = ref(false)
 const loading = ref(true)
 const builtInShortcutsEnabled = ref<BuiltInShortcutConfig>({ ...DEFAULT_BUILTIN_SHORTCUTS_ENABLED })
 
-// 当前显示的快捷键列表
+const aliasMappings = ref<CommandAliasStore>({})
+// alias 目标列表来自主进程整理后的 canonical commands，仅包含允许建立映射的插件文本指令
+const aliasTargetOptions = ref<ShortcutsSettingAliasCommandOption[]>([])
+const aliasDialogVisible = ref(false)
+const aliasDialogRef = ref<InstanceType<typeof AliasMappingDialog> | null>(null)
+const aliasDialogState = ref<ShortcutsSettingAliasDialogState | null>(null)
+const aliasSaving = ref(false)
+
 const currentShortcuts = computed(() => {
-  return activeTab.value === 'global' ? globalShortcuts.value : appShortcuts.value
+  if (activeTab.value === 'global') return globalShortcuts.value
+  if (activeTab.value === 'app') return appShortcuts.value
+  return []
 })
 
-const { value: searchQuery } = useZtoolsSubInput('', '搜索快捷键...')
+const { value: searchQuery } = useZtoolsSubInput('', '搜索快捷键或别名...')
+
 const filteredShortcuts = computed(() =>
   weightedSearch(currentShortcuts.value, searchQuery.value || '', [
     { value: (s) => s.shortcut || '', weight: 10 },
@@ -127,40 +155,174 @@ const filteredShortcuts = computed(() =>
   ])
 )
 
-// 编辑器状态
+const aliasTargetMap = computed(
+  () => new Map(aliasTargetOptions.value.map((target) => [target.commandId, target]))
+)
+
+const aliasRows = computed<AliasRow[]>(() => {
+  const rows: AliasRow[] = []
+
+  // 持久化结构按 commandId 分桶，这里扁平化成表格行，方便展示和编辑。
+  // 目标指令缺失时保留映射并标记 missingTarget，避免用户无感丢失历史配置。
+  for (const [commandId, entries] of Object.entries(aliasMappings.value)) {
+    for (const entry of entries || []) {
+      const normalizedAlias = entry.alias.trim()
+      if (!normalizedAlias) continue
+
+      const target = aliasTargetMap.value.get(commandId) || null
+      rows.push({
+        id: `${commandId}::${normalizedAlias}`,
+        commandId,
+        alias: normalizedAlias,
+        icon: entry.icon,
+        target,
+        targetLabel: getAliasTargetLabel(target),
+        missingTarget: !target
+      })
+    }
+  }
+
+  return rows
+})
+
+const filteredAliasRows = computed(() =>
+  weightedSearch(aliasRows.value, searchQuery.value || '', [
+    { value: (row) => row.alias || '', weight: 10 },
+    { value: (row) => row.targetLabel || '', weight: 6 },
+    { value: (row) => row.commandId || '', weight: 2 }
+  ])
+)
+
+const addButtonLabel = computed(() => (activeTab.value === 'alias' ? '添加映射' : '添加快捷键'))
+
+const showAliasEmptyState = computed(() => !loading.value && aliasRows.value.length === 0)
+
+const showAliasSearchEmptyState = computed(
+  () => !loading.value && aliasRows.value.length > 0 && filteredAliasRows.value.length === 0
+)
+
+const showShortcutEditor = computed(() => showEditor.value && activeTab.value !== 'alias')
+const showAliasEditor = computed(() => aliasDialogVisible.value && activeTab.value === 'alias')
+const showDetailPanel = computed(() => showShortcutEditor.value || showAliasEditor.value)
+
 const showEditor = ref(false)
 const editingShortcut = ref<GlobalShortcut | null>(null)
 const prefillTarget = ref('')
 
-// 加载全局快捷键列表
+function getCommandId(pluginName: string, featureCode: string, cmdName: string): string {
+  return _getCommandId({
+    pluginName,
+    featureCode,
+    name: cmdName,
+    cmdType: 'text'
+  })
+}
+
+function getAliasTargetLabel(target: ShortcutsSettingAliasCommandOption | null): string {
+  if (!target) return '目标已失效'
+  return `${target.pluginTitle} / ${target.cmdName}`
+}
+
+function cloneAliasStore(): CommandAliasStore {
+  // 先转成普通对象，避免直接修改响应式引用，也避免后续 IPC 传输时混入 Vue 代理对象
+  return JSON.parse(JSON.stringify(aliasMappings.value || {}))
+}
+
+function focusAliasInput(select = true): void {
+  aliasDialogRef.value?.focusAliasInput(select)
+}
+
+function handleAliasDialogAfterEnter(): void {
+  focusAliasInput(false)
+}
+
+function getAliasDisplayIcon(row: AliasRow): string | undefined {
+  return row.icon || row.target?.icon
+}
+
+function resolveAliasTarget(
+  target: ShortcutsSettingAliasDraftTarget
+): ShortcutsSettingAliasCommandOption {
+  return (
+    // 优先复用当前最新的目标指令数据；若目标已经不在候选列表中，则退回路由里带过来的草稿信息
+    aliasTargetMap.value.get(target.commandId) || {
+      ...target,
+      label: `${target.pluginTitle} / ${target.cmdName}`
+    }
+  )
+}
+
+function openAliasDialog(state: ShortcutsSettingAliasDialogState): void {
+  closeEditor()
+  aliasDialogState.value = {
+    ...state,
+    target: state.target ? { ...state.target } : null
+  }
+  aliasDialogVisible.value = true
+}
+
+function closeAliasDialog(): void {
+  aliasDialogVisible.value = false
+  aliasDialogState.value = null
+}
+
+function openCreateAliasDialog(target?: ShortcutsSettingAliasDraftTarget): void {
+  activeTab.value = 'alias'
+  openAliasDialog({
+    mode: 'create',
+    alias: '',
+    icon: undefined,
+    target: target ? resolveAliasTarget(target) : null
+  })
+}
+
+function openEditAliasDialog(row: AliasRow): void {
+  openAliasDialog({
+    mode: 'edit',
+    originalCommandId: row.commandId,
+    originalAlias: row.alias,
+    alias: row.alias,
+    icon: row.icon,
+    target: row.target
+  })
+}
+
+function buildAliasEntry(alias: string, icon?: string): CommandAliasEntry {
+  return {
+    alias: alias.trim(),
+    icon: icon || undefined
+  }
+}
+
+async function saveAliasMappings(nextStore: CommandAliasStore): Promise<boolean> {
+  try {
+    const normalized = normalizeCommandAliases(nextStore)
+    // 保存前再次做一次归一化，并转成普通对象，避免把 Vue 响应式代理直接发给 IPC
+    await window.ztools.internal.updateCommandAliases(JSON.parse(JSON.stringify(normalized)))
+    aliasMappings.value = normalized
+    return true
+  } catch (err: any) {
+    console.error('保存指令别名失败:', err)
+    error(`保存指令别名失败: ${err?.message || '未知错误'}`)
+    return false
+  }
+}
+
 async function loadGlobalShortcuts(): Promise<void> {
   try {
     const data = await window.ztools.internal.dbGet('global-shortcuts')
     globalShortcuts.value = data || []
-    console.log('加载全局快捷键:', globalShortcuts.value)
-  } catch (error) {
-    console.error('加载全局快捷键失败:', error)
+  } catch (err) {
+    console.error('加载全局快捷键失败:', err)
   }
 }
 
-// 加载应用快捷键列表
 async function loadAppShortcuts(): Promise<void> {
   try {
     const data = await window.ztools.internal.dbGet('app-shortcuts')
     appShortcuts.value = data || []
-    console.log('加载应用快捷键:', appShortcuts.value)
-  } catch (error) {
-    console.error('加载应用快捷键失败:', error)
-  }
-}
-
-// 加载所有快捷键
-async function loadShortcuts(): Promise<void> {
-  loading.value = true
-  try {
-    await Promise.all([loadGlobalShortcuts(), loadAppShortcuts(), loadBuiltInShortcutSettings()])
-  } finally {
-    loading.value = false
+  } catch (err) {
+    console.error('加载应用快捷键失败:', err)
   }
 }
 
@@ -175,6 +337,78 @@ async function loadBuiltInShortcutSettings(): Promise<void> {
   } catch (err) {
     console.error('加载内置快捷键开关失败:', err)
   }
+}
+
+async function loadAliasMappings(): Promise<void> {
+  try {
+    const data = await window.ztools.internal.dbGet(COMMAND_ALIASES_KEY)
+    // 设置页统一读取归一化后的 alias store，兼容旧版 string[] 结构
+    aliasMappings.value = normalizeCommandAliases(data)
+  } catch (err) {
+    console.error('加载指令别名失败:', err)
+  }
+}
+
+async function loadAliasTargets(): Promise<void> {
+  try {
+    const result = await window.ztools.internal.getCommands()
+    const pluginMap = new Map((result.plugins || []).map((plugin: any) => [plugin.name, plugin]))
+    const targetMap = new Map<string, ShortcutsSettingAliasCommandOption>()
+
+    for (const command of result.commands || []) {
+      // alias 目标仅允许插件文本指令，直接启动项和匹配指令都不进入候选列表
+      if (command.type !== 'plugin' || command.cmdType !== 'text') continue
+      if (!command.pluginName || !command.featureCode || !command.name) continue
+
+      const plugin = pluginMap.get(command.pluginName)
+      const pluginTitle = command.pluginTitle || plugin?.title || command.pluginName
+      const commandId = getCommandId(command.pluginName, command.featureCode, command.name)
+
+      targetMap.set(commandId, {
+        commandId,
+        pluginName: command.pluginName,
+        pluginTitle,
+        featureCode: command.featureCode,
+        cmdName: command.name,
+        cmdType: 'text',
+        icon: command.icon || plugin?.logo,
+        label: `${pluginTitle} / ${command.name}`
+      })
+    }
+
+    aliasTargetOptions.value = Array.from(targetMap.values()).sort((a, b) =>
+      a.label.localeCompare(b.label, 'zh-CN')
+    )
+  } catch (err) {
+    console.error('加载指令目标失败:', err)
+  }
+}
+
+async function loadShortcuts(): Promise<void> {
+  loading.value = true
+  try {
+    await Promise.all([
+      loadGlobalShortcuts(),
+      loadAppShortcuts(),
+      loadBuiltInShortcutSettings(),
+      loadAliasMappings(),
+      loadAliasTargets()
+    ])
+  } finally {
+    loading.value = false
+  }
+}
+
+function switchToTab(tab: ShortcutsSettingTab): void {
+  activeTab.value = tab
+
+  // alias 编辑器与快捷键编辑器共用详情面板，切换 tab 时需要互斥清理另一侧状态
+  if (tab === 'alias') {
+    closeEditor()
+    return
+  }
+
+  closeAliasDialog()
 }
 
 async function handleToggleBuiltInShortcut(
@@ -204,60 +438,136 @@ function handleBuiltInToggleChange(key: BuiltInShortcutKey, event: Event): void 
   void handleToggleBuiltInShortcut(key, target.checked)
 }
 
-// 保存全局快捷键列表
 async function saveGlobalShortcuts(): Promise<void> {
   try {
     await window.ztools.internal.dbPut(
       'global-shortcuts',
       JSON.parse(JSON.stringify(globalShortcuts.value))
     )
-    console.log('保存全局快捷键成功')
-  } catch (error) {
-    console.error('保存全局快捷键失败:', error)
+  } catch (err) {
+    console.error('保存全局快捷键失败:', err)
   }
 }
 
-// 保存应用快捷键列表
 async function saveAppShortcuts(): Promise<void> {
   try {
     await window.ztools.internal.dbPut(
       'app-shortcuts',
       JSON.parse(JSON.stringify(appShortcuts.value))
     )
-    console.log('保存应用快捷键成功')
-  } catch (error) {
-    console.error('保存应用快捷键失败:', error)
+  } catch (err) {
+    console.error('保存应用快捷键失败:', err)
   }
 }
 
-// 显示添加编辑器
+async function handleSaveAliasDialog(state: ShortcutsSettingAliasDialogState): Promise<void> {
+  if (aliasSaving.value) return
+
+  const nextAlias = state.alias.trim()
+  if (!nextAlias) {
+    warning('别名不能为空')
+    focusAliasInput(false)
+    return
+  }
+
+  if (!state.target) {
+    warning('请先选择目标指令')
+    return
+  }
+
+  const nextStore = cloneAliasStore()
+
+  // 编辑态采用“先删旧映射，再写新映射”的策略，因此允许同时修改 alias 文本和目标指令
+  if (state.mode === 'edit' && state.originalCommandId && state.originalAlias) {
+    const originalEntries = [...(nextStore[state.originalCommandId] || [])]
+    const filteredOriginalEntries = originalEntries.filter(
+      (entry) => entry.alias !== state.originalAlias
+    )
+
+    if (filteredOriginalEntries.length > 0) {
+      nextStore[state.originalCommandId] = filteredOriginalEntries
+    } else {
+      delete nextStore[state.originalCommandId]
+    }
+  }
+
+  const targetEntries = [...(nextStore[state.target.commandId] || [])]
+  // 重复校验只限制同一目标指令下的 alias，避免影响其它指令使用同名 alias
+  if (targetEntries.some((entry) => entry.alias === nextAlias)) {
+    warning('该目标已存在相同别名')
+    focusAliasInput()
+    return
+  }
+
+  nextStore[state.target.commandId] = [...targetEntries, buildAliasEntry(nextAlias, state.icon)]
+
+  aliasSaving.value = true
+  const saved = await saveAliasMappings(nextStore)
+  aliasSaving.value = false
+
+  if (saved) {
+    success(state.mode === 'edit' ? '别名已更新' : '别名已添加')
+    closeAliasDialog()
+  }
+}
+
+async function deleteAliasRow(row: AliasRow): Promise<void> {
+  const confirmed = await confirm({
+    title: '删除别名映射',
+    message: `确定要删除别名“${row.alias}”吗？`,
+    type: 'danger',
+    confirmText: '删除',
+    cancelText: '取消'
+  })
+  if (!confirmed) return
+
+  const nextStore = cloneAliasStore()
+  // 删除维度是 commandId + alias；如果某个 bucket 被删空，就直接移除该 commandId
+  const entries = (nextStore[row.commandId] || []).filter((entry) => entry.alias !== row.alias)
+
+  if (entries.length > 0) {
+    nextStore[row.commandId] = entries
+  } else {
+    delete nextStore[row.commandId]
+  }
+
+  aliasSaving.value = true
+  const saved = await saveAliasMappings(nextStore)
+  aliasSaving.value = false
+
+  if (saved) {
+    success('别名已删除')
+  }
+}
+
 function showAddEditor(): void {
+  if (activeTab.value === 'alias') {
+    openCreateAliasDialog()
+    return
+  }
+
   editingShortcut.value = null
   prefillTarget.value = ''
   showEditor.value = true
 }
 
-// 显示编辑编辑器
 function handleEdit(shortcut: GlobalShortcut): void {
   editingShortcut.value = shortcut
   prefillTarget.value = ''
   showEditor.value = true
 }
 
-// 关闭编辑器
 function closeEditor(): void {
   showEditor.value = false
   editingShortcut.value = null
   prefillTarget.value = ''
 }
 
-// 保存快捷键（添加或编辑）
 async function handleSave(recordedShortcut: string, targetCommand: string): Promise<void> {
   if (!recordedShortcut || !targetCommand) {
     return
   }
 
-  // 根据当前 tab 选择对应的逻辑
   if (activeTab.value === 'global') {
     await handleSaveGlobalShortcut(recordedShortcut, targetCommand)
   } else {
@@ -265,12 +575,10 @@ async function handleSave(recordedShortcut: string, targetCommand: string): Prom
   }
 }
 
-// 保存全局快捷键（添加或编辑）
 async function handleSaveGlobalShortcut(
   recordedShortcut: string,
   targetCommand: string
 ): Promise<void> {
-  // 如果是编辑模式
   if (editingShortcut.value) {
     const exists = globalShortcuts.value.some(
       (s) => s.id !== editingShortcut.value!.id && s.shortcut === recordedShortcut
@@ -324,7 +632,6 @@ async function handleSaveGlobalShortcut(
     return
   }
 
-  // 添加模式：检查快捷键是否已存在
   const exists = globalShortcuts.value.some((s) => s.shortcut === recordedShortcut)
   if (exists) {
     warning('该快捷键已存在，请使用其他快捷键')
@@ -362,12 +669,10 @@ async function handleSaveGlobalShortcut(
   }
 }
 
-// 保存应用快捷键（添加或编辑）
 async function handleSaveAppShortcut(
   recordedShortcut: string,
   targetCommand: string
 ): Promise<void> {
-  // 如果是编辑模式
   if (editingShortcut.value) {
     const exists = appShortcuts.value.some(
       (s) => s.id !== editingShortcut.value!.id && s.shortcut === recordedShortcut
@@ -418,7 +723,6 @@ async function handleSaveAppShortcut(
     return
   }
 
-  // 添加模式：检查快捷键是否已存在
   const exists = appShortcuts.value.some((s) => s.shortcut === recordedShortcut)
   if (exists) {
     warning('该快捷键已存在，请使用其他快捷键')
@@ -453,7 +757,6 @@ async function handleSaveAppShortcut(
   }
 }
 
-// 删除快捷键
 async function handleDelete(id: string): Promise<void> {
   const isGlobal = activeTab.value === 'global'
   const shortcutList = isGlobal ? globalShortcuts.value : appShortcuts.value
@@ -496,20 +799,33 @@ async function handleDelete(id: string): Promise<void> {
   }
 }
 
-// 初始化
 onMounted(() => {
-  // 检测平台
   const userAgent = navigator.userAgent.toLowerCase()
   const platform = navigator.platform.toLowerCase()
 
   isMac.value = platform.includes('mac') || userAgent.includes('mac')
   isWindows.value = platform.includes('win') || userAgent.includes('windows')
 
-  loadShortcuts()
+  void loadShortcuts()
 })
 
-useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
+useJumpFunction<ShortcutsSettingJumpFunction>(async (state) => {
+  // 支持从“所有指令”页带着 draftTarget 跳转过来，进入 alias tab 后直接打开创建对话框
+  if (state.tab === 'alias' && state.draftTarget) {
+    switchToTab('alias')
+    await nextTick()
+    openCreateAliasDialog(state.draftTarget)
+    return
+  }
+
+  if (state.tab) {
+    switchToTab(state.tab)
+    return
+  }
+
   if (state.payload && !state.type) {
+    activeTab.value = 'global'
+    closeAliasDialog()
     prefillTarget.value = state.payload
     editingShortcut.value = null
     showEditor.value = true
@@ -518,37 +834,127 @@ useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
 </script>
 <template>
   <div class="h-full content-panel">
-    <!-- 可滚动内容区 -->
     <Transition name="list-slide">
-      <div v-show="!showEditor" class="scrollable-content">
-        <!-- Tab 切换 -->
+      <div v-show="!showDetailPanel" class="scrollable-content">
+        <!-- tab 切换区 -->
         <div class="tabs-container">
           <div class="tab-group">
             <button
               :class="['tab-btn', { active: activeTab === 'global' }]"
-              @click="activeTab = 'global'"
+              @click="switchToTab('global')"
             >
               全局快捷键
             </button>
             <button
               :class="['tab-btn', { active: activeTab === 'app' }]"
-              @click="activeTab = 'app'"
+              @click="switchToTab('app')"
             >
               应用快捷键
+            </button>
+            <button
+              :class="['tab-btn', { active: activeTab === 'alias' }]"
+              @click="switchToTab('alias')"
+            >
+              指令别名
             </button>
           </div>
         </div>
 
-        <!-- 顶部添加按钮 -->
         <div class="panel-header">
-          <button class="btn" @click="showAddEditor">添加快捷键</button>
+          <button class="btn" @click="showAddEditor">{{ addButtonLabel }}</button>
         </div>
 
-        <!-- 快捷键列表 -->
-        <div class="shortcut-list">
-          <!-- 应用快捷键 tab：先显示自定义快捷键,再显示内置快捷键 -->
+        <!-- alias 列表区 -->
+        <div v-if="activeTab === 'alias'" class="shortcut-list">
+          <div v-if="filteredAliasRows.length > 0" class="alias-table">
+            <div v-for="row in filteredAliasRows" :key="row.id" class="card alias-table-row">
+              <div class="alias-icon-cell">
+                <AdaptiveIcon
+                  v-if="getAliasDisplayIcon(row)"
+                  :src="getAliasDisplayIcon(row)!"
+                  class="alias-command-icon"
+                  alt="指令图标"
+                  draggable="false"
+                />
+                <div v-else class="alias-icon-placeholder">
+                  <div class="i-z-command font-size-18px" />
+                </div>
+              </div>
+
+              <div class="alias-value-cell">
+                <div class="alias-display-text">{{ row.alias }}</div>
+              </div>
+
+              <div class="alias-target-cell">
+                <div :class="['alias-target-title', { invalid: row.missingTarget }]">
+                  {{ row.targetLabel }}
+                </div>
+                <div class="alias-target-subtitle">
+                  {{ row.missingTarget ? row.commandId : row.target?.featureCode }}
+                </div>
+              </div>
+
+              <div class="alias-actions-cell">
+                <button
+                  class="icon-btn edit-btn"
+                  title="编辑"
+                  @click.stop="openEditAliasDialog(row)"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                  </svg>
+                </button>
+                <button class="icon-btn delete-btn" title="删除" @click.stop="deleteAliasRow(row)">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path
+                      d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+                    ></path>
+                    <line x1="10" y1="11" x2="10" y2="17"></line>
+                    <line x1="14" y1="11" x2="14" y2="17"></line>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-else-if="showAliasEmptyState" class="empty-state alias-empty-state">
+            <div class="i-z-command empty-icon" style="font-size: 64px" />
+            <div class="empty-text">暂无指令别名</div>
+            <div class="empty-hint">点击右上角“添加映射”，或从所有指令中直接创建</div>
+          </div>
+
+          <!-- alias 空态区 -->
+          <div v-else-if="showAliasSearchEmptyState" class="empty-state alias-empty-state">
+            <div class="i-z-search empty-icon" style="font-size: 64px" />
+            <div class="empty-text">未找到匹配映射</div>
+            <div class="empty-hint">换个关键词试试</div>
+          </div>
+        </div>
+
+        <div v-else class="shortcut-list">
           <template v-if="activeTab === 'app'">
-            <!-- 自定义应用快捷键区域 -->
             <div class="shortcut-section">
               <div class="category-label">自定义快捷键</div>
               <!-- 有自定义快捷键时显示列表 -->
@@ -613,15 +1019,13 @@ useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
                   </div>
                 </div>
               </div>
-              <!-- 没有自定义快捷键时显示空状态 -->
               <div v-else-if="!loading" class="empty-state-inline">
                 <div class="i-z-keyboard empty-icon" style="font-size: 48px" />
                 <div class="empty-text-inline">暂无自定义快捷键</div>
-                <div class="empty-hint-inline">点击上方"添加快捷键"按钮创建</div>
+                <div class="empty-hint-inline">点击上方“添加快捷键”按钮创建</div>
               </div>
             </div>
 
-            <!-- 内置快捷键列表 -->
             <div v-if="builtInAppShortcuts.length > 0" class="shortcut-section">
               <div class="category-label">内置快捷键</div>
               <div
@@ -655,7 +1059,6 @@ useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
             </div>
           </template>
 
-          <!-- 全局快捷键 tab：保持原有结构不变 -->
           <template v-else>
             <div
               v-for="shortcut in filteredShortcuts"
@@ -717,21 +1120,20 @@ useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
               </div>
             </div>
 
-            <!-- 全局快捷键空状态 -->
             <div v-if="!loading && currentShortcuts.length === 0" class="empty-state">
               <div class="i-z-keyboard empty-icon" style="font-size: 64px" />
               <div class="empty-text">暂无全局快捷键</div>
-              <div class="empty-hint">点击"添加快捷键"来创建你的第一个全局快捷键</div>
+              <div class="empty-hint">点击“添加快捷键”来创建你的第一个全局快捷键</div>
             </div>
           </template>
         </div>
       </div>
     </Transition>
 
-    <!-- 快捷键编辑器覆盖面板组件 -->
     <Transition name="slide">
+      <!-- 快捷键编辑面板 -->
       <ShortcutEditor
-        v-if="showEditor"
+        v-if="showShortcutEditor"
         :editing-shortcut="editingShortcut"
         :prefill-target="prefillTarget"
         :is-app-shortcut="activeTab === 'app'"
@@ -739,10 +1141,56 @@ useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
         @save="handleSave"
       />
     </Transition>
+
+    <Transition name="alias-slide" @after-enter="handleAliasDialogAfterEnter">
+      <!-- alias 编辑面板 -->
+      <AliasMappingDialog
+        ref="aliasDialogRef"
+        v-if="showAliasEditor"
+        v-model:visible="aliasDialogVisible"
+        :initial-state="aliasDialogState"
+        :target-options="aliasTargetOptions"
+        :saving="aliasSaving"
+        @save="handleSaveAliasDialog"
+        @cancel="closeAliasDialog"
+      />
+    </Transition>
   </div>
 </template>
 
-<style scoped>
+<style lang="less" scoped>
+.alias-slide-enter-active {
+  transition:
+    transform 0.2s ease-out,
+    opacity 0.15s ease;
+}
+
+.alias-slide-leave-active {
+  transition:
+    transform 0.2s ease-in,
+    opacity 0.15s ease;
+}
+
+.alias-slide-enter-from {
+  transform: translateX(100%);
+  opacity: 0;
+}
+
+.alias-slide-enter-to {
+  transform: translateX(0);
+  opacity: 1;
+}
+
+.alias-slide-leave-from {
+  transform: translateX(0);
+  opacity: 1;
+}
+
+.alias-slide-leave-to {
+  transform: translateX(100%);
+  opacity: 1;
+}
+
 .content-panel {
   position: relative;
   height: 100%;
@@ -752,7 +1200,6 @@ useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
   background: var(--bg-color);
 }
 
-/* 可滚动内容区 */
 .scrollable-content {
   position: absolute;
   inset: 0;
@@ -761,7 +1208,6 @@ useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
   padding: 20px;
 }
 
-/* Tab 切换 */
 .tabs-container {
   position: sticky;
   top: 0;
@@ -805,7 +1251,6 @@ useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
-/* 列表滑动动画 */
 .list-slide-enter-active {
   transition:
     transform 0.2s ease-out,
@@ -838,21 +1283,18 @@ useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
   opacity: 0;
 }
 
-/* 顶部按钮 */
 .panel-header {
   display: flex;
   justify-content: flex-end;
   margin-bottom: 20px;
 }
 
-/* 快捷键列表 */
 .shortcut-list {
   display: flex;
   flex-direction: column;
   gap: 20px;
 }
 
-/* 分组标题 */
 .shortcut-section {
   display: flex;
   flex-direction: column;
@@ -882,7 +1324,6 @@ useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
   transform: translateX(2px);
 }
 
-/* 固定快捷键样式 */
 .shortcut-item.built-in {
   cursor: default;
   opacity: 0.85;
@@ -924,7 +1365,193 @@ useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
   transform-origin: center;
 }
 
-/* 图标按钮颜色样式 */
+.alias-table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.alias-table-header,
+.alias-table-row {
+  display: grid;
+  grid-template-columns: 56px minmax(180px, 1.2fr) minmax(180px, 2fr) 56px;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+}
+
+.alias-table-header {
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.alias-header-cell {
+  white-space: nowrap;
+}
+
+.alias-table-row {
+  transition: all 0.2s;
+}
+
+.alias-table-row:hover {
+  background: var(--hover-bg);
+  transform: translateX(2px);
+}
+
+.alias-icon-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.alias-command-icon,
+.alias-icon-placeholder,
+.alias-target-option-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.alias-command-icon,
+.alias-target-option-icon {
+  object-fit: contain;
+}
+
+.alias-icon-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--active-bg);
+  color: var(--text-secondary);
+}
+
+.alias-value-cell,
+.alias-target-cell {
+  min-width: 0;
+}
+
+.alias-display-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-color);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alias-input,
+.alias-target-search {
+  width: 100%;
+}
+
+.alias-target-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-color);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alias-target-title.invalid {
+  color: var(--danger-color);
+}
+
+.alias-target-subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alias-target-change-btn {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--primary-color);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.alias-target-change-btn:hover {
+  text-decoration: underline;
+}
+
+.alias-target-options {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.alias-target-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--divider-color);
+  border-radius: 8px;
+  background: var(--card-bg);
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s;
+}
+
+.alias-target-option:hover {
+  border-color: var(--primary-color);
+  background: var(--primary-light-bg);
+}
+
+.alias-target-option-texts {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.alias-target-option-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-color);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alias-target-option-plugin {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alias-target-empty {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  background: var(--card-bg);
+  border-radius: 8px;
+}
+
+.alias-actions-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .edit-btn {
   color: var(--primary-color);
 }
@@ -941,7 +1568,6 @@ useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
   background: var(--danger-light-bg);
 }
 
-/* 空状态 */
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -949,6 +1575,12 @@ useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
   justify-content: center;
   padding: 60px 20px;
   text-align: center;
+}
+
+.alias-empty-state {
+  border: 2px dashed var(--divider-color);
+  border-radius: 12px;
+  background: var(--card-bg);
 }
 
 .empty-icon {
@@ -969,7 +1601,6 @@ useJumpFunction<ShortcutsSettingJumpFunction>((state) => {
   color: var(--text-secondary);
 }
 
-/* 内联空状态 (用于自定义快捷键区域) */
 .empty-state-inline {
   display: flex;
   flex-direction: column;

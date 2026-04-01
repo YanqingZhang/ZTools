@@ -297,11 +297,16 @@ declare global {
         }>
 
         // 指令管理
+        // 返回设置页使用的原始指令快照，用于构建 alias 目标列表
         getCommands: () => Promise<{
           commands: any[]
           regexCommands: any[]
           plugins: any[]
         }>
+        // 保存 alias 映射。主进程会负责归一化、持久化，并触发主窗口的指令缓存刷新。
+        updateCommandAliases: (
+          aliases: Record<string, Array<{ alias: string; icon?: string }>>
+        ) => Promise<{ success: boolean }>
 
         // 本地启动管理
         localShortcuts: {
