@@ -1553,13 +1553,12 @@ export class PluginsAPI {
         source: getPluginSource(pluginInfo.isDevelopment)
       })
 
+      // 删除禁用插件标识
       const disabledPlugins = this.getDisabledPluginSet()
       if (disabledPlugins.delete(pluginPath)) {
         this.disabledPluginPathSet = disabledPlugins
         databaseAPI.dbPut(DISABLED_PLUGINS_KEY, [...disabledPlugins])
       }
-
-      await databaseAPI.clearPluginData(pluginInfo.name)
 
       this.notifyPluginsChanged()
 
