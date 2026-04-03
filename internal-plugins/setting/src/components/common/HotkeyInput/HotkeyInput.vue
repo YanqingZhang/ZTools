@@ -205,7 +205,7 @@ function handleKeyDown(e: KeyboardEvent): void {
       mainKey = e.code.replace('Key', '')
     } else if (e.code.startsWith('Digit')) {
       mainKey = e.code.replace('Digit', '')
-    } else if (/^F([1-9]|1\d|2[0-4])$/.test(e.code)) {
+    } else if (/^F([1-9]|1[0-2])$/.test(e.code)) {
       mainKey = e.code
     } else {
       mainKey = CODE_TO_ACCELERATOR[e.code] || ''
@@ -283,6 +283,17 @@ function handleKeyUp(e: KeyboardEvent): void {
   // 常规快捷键确认：至少一个修饰键 + 一个主键
   if (recordedKeys.value.length > 1 && mainKeyPressed.value) {
     confirmShortcut(recordedKeys.value.join('+'))
+    return
+  }
+
+  // 单独 F 键
+  const currentKey = recordedKeys.value[recordedKeys.value.length - 1] || ''
+  if (
+    recordedKeys.value.length === 1 &&
+    mainKeyPressed.value &&
+    /^F([1-9]|1[0-2])$/.test(currentKey)
+  ) {
+    confirmShortcut(currentKey)
     return
   }
 
