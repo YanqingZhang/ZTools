@@ -1,6 +1,7 @@
 import type { ConfirmDialogOptions } from './types'
 import { launchApp as macLaunch } from './macLauncher'
 import { launchApp as winLaunch } from './windowsLauncher'
+import { launchApp as linuxLaunch } from './linuxLauncher'
 
 // 重新导出类型
 export type { ConfirmDialogOptions } from './types'
@@ -18,6 +19,9 @@ export async function launchApp(
   } else if (platform === 'win32') {
     // Windows
     return winLaunch(appPath, confirmDialog)
+  } else if (platform === 'linux') {
+    // Linux
+    return linuxLaunch(appPath, confirmDialog)
   } else {
     console.warn(`[Launcher] 不支持的平台: ${platform}`)
     throw new Error(`Unsupported platform: ${platform}`)

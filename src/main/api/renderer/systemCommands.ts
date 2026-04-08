@@ -40,6 +40,8 @@ export async function executeSystemCommand(
         cmd = 'osascript -e "tell application \\"System Events\\" to restart"'
       } else if (platform === 'win32') {
         cmd = 'shutdown /r /t 0'
+      } else if (platform === 'linux') {
+        cmd = 'systemctl reboot'
       }
       break
 
@@ -48,6 +50,8 @@ export async function executeSystemCommand(
         cmd = 'osascript -e "tell application \\"System Events\\" to shut down"'
       } else if (platform === 'win32') {
         cmd = 'shutdown /s /t 0'
+      } else if (platform === 'linux') {
+        cmd = 'systemctl poweroff'
       }
       break
 
@@ -56,6 +60,8 @@ export async function executeSystemCommand(
         cmd = 'osascript -e "tell application \\"System Events\\" to log out"'
       } else if (platform === 'win32') {
         cmd = 'shutdown /l'
+      } else if (platform === 'linux') {
+        cmd = 'gnome-session-quit --logout --no-prompt || pkill -u $USER'
       }
       break
 
@@ -65,6 +71,8 @@ export async function executeSystemCommand(
       } else if (platform === 'win32') {
         ctx.mainWindow?.hide()
         cmd = `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)"`
+      } else if (platform === 'linux') {
+        cmd = 'systemctl suspend'
       }
       break
 
@@ -75,6 +83,8 @@ export async function executeSystemCommand(
           'osascript -e "tell application \\"System Events\\" to keystroke \\"q\\" using {control down, command down}"'
       } else if (platform === 'win32') {
         cmd = 'rundll32.exe user32.dll,LockWorkStation'
+      } else if (platform === 'linux') {
+        cmd = 'xdg-screensaver lock || gnome-screensaver-command -l'
       }
       break
 
@@ -426,6 +436,21 @@ async function handleOpenTerminal(
       end tell
     `
       await execAsync(`osascript -e '${script}'`)
+      console.log('[SystemCmd] 已在终端打开')
+      ctx.mainWindow?.hide()
+      return { success: true }
+    } catch (error) {
+      console.error('[SystemCmd] 在终端打开失败:', error)
+      return { success: false, error: String(error) }
+    }
+  } else if (process.platform === 'linux') {
+    try {
+      // 获取当前用户主目录作为默认路径
+      const folderPath = require('os').homedir()
+      // 尝试使用常用终端模拟器
+      await execAsync(
+        `exo-open --launch TerminalEmulator --working-directory "${folderPath}" || gnome-terminal --working-directory="${folderPath}" || xterm`
+      )
       console.log('[SystemCmd] 已在终端打开')
       ctx.mainWindow?.hide()
       return { success: true }
