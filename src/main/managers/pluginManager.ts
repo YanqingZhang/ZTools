@@ -33,21 +33,38 @@ console.log('[Plugin] mainPreload', mainPreload)
 
 /**
  * 为插件视图注册外部链接拦截器
- * 拦截 http/https 链接跳转，使用系统默认浏览器打开
+ * 同源 http/https 导航保留在插件内部，跨源链接使用系统默认浏览器打开，避免开发中插件热更新导致错误地在浏览器打开
  */
 export function registerExternalLinkInterceptor(webContents: WebContents): void {
+  const isHttpUrl = (url: string): boolean =>
+    url.startsWith('http://') || url.startsWith('https://')
+
+  const isSameHttpOrigin = (currentUrl: string, targetUrl: string): boolean => {
+    if (!isHttpUrl(currentUrl) || !isHttpUrl(targetUrl)) return false
+
+    try {
+      return new URL(currentUrl).origin === new URL(targetUrl).origin
+    } catch {
+      return false
+    }
+  }
+
   // 拦截插件内部的页面跳转（如 <a href="..."> 点击）
   webContents.on('will-navigate', (event, url) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
+    const currentUrl = webContents.getURL()
+    if (isHttpUrl(url) && !isSameHttpOrigin(currentUrl, url)) {
       event.preventDefault()
-      console.log('[Plugin] 拦截页面跳转，使用默认浏览器打开:', url)
+      console.log('[Plugin] 拦截跨源页面跳转，使用默认浏览器打开:', {
+        from: currentUrl,
+        to: url
+      })
       shell.openExternal(url)
     }
   })
 
-  // 拦截 target="_blank" 或 window.open 打开的链接
+  // 拦截 target="_blank" 或 window.open 打开的链接，统一交给系统默认浏览器
   webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
+    if (isHttpUrl(url)) {
       console.log('[Plugin] 拦截新窗口打开，使用默认浏览器打开:', url)
       shell.openExternal(url)
     }
