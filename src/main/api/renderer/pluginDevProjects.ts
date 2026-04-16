@@ -487,9 +487,27 @@ export class PluginDevProjectsAPI {
       const registry = this.readRegistry()
       if (!registry.projects[projectName]) return { success: false, error: '开发项目不存在' }
 
+      const registryEntry = registry.projects[projectName]
+      const devEffectiveName = toDevPluginName(projectName)
+      const plugins = this.deps.readInstalledPlugins()
+      const installedDevPlugin = plugins.find(
+        (p) => p?.isDevelopment && p?.name === devEffectiveName
+      )
+      const killPath = installedDevPlugin?.path || registryEntry.projectPath
+
+      if (killPath) {
+        this.deps.pluginManager?.killPlugin(killPath)
+      }
+
+      if (installedDevPlugin) {
+        this.deps.writeInstalledPlugins(
+          plugins.filter((p) => !(p?.isDevelopment && p?.name === devEffectiveName))
+        )
+      }
+
       const { [projectName]: _, ...remainingProjects } = registry.projects
       this.writeRegistry({ ...registry, projects: remainingProjects })
-      this.removePluginUsageData(toDevPluginName(projectName))
+      this.removePluginUsageData(devEffectiveName)
       this.deps.notifyPluginsChanged()
       console.log('[DevProjects] 项目已移除:', projectName)
       return { success: true, pluginName: projectName }

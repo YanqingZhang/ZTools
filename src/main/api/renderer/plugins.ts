@@ -452,6 +452,8 @@ export class PluginsAPI {
         }
       }
 
+      this.pluginManager?.killPlugin(pluginPath)
+
       plugins.splice(pluginIndex, 1)
       databaseAPI.dbPut('plugins', plugins)
 
