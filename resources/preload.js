@@ -1,4 +1,5 @@
 const electron = require('electron')
+const { ipcRenderer } = require('electron')
 
 // ── plugin.api 统一 IPC 公共方法（与 utools 写法一致）──
 
@@ -818,6 +819,7 @@ window.ztools = {
       addByPath: async (filePath) =>
         await electron.ipcRenderer.invoke('local-shortcuts:add-by-path', filePath),
       delete: async (id) => await electron.ipcRenderer.invoke('local-shortcuts:delete', id),
+      deleteWhenNotExist: () => ipcRenderer.invoke('local-shortcuts:delete-when-not-exist'),
       open: async (path) => await electron.ipcRenderer.invoke('local-shortcuts:open', path),
       updateAlias: async (id, alias) =>
         await electron.ipcRenderer.invoke('local-shortcuts:update-alias', id, alias)

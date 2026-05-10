@@ -1,5 +1,5 @@
 import { app, ipcMain, shell } from 'electron'
-import { promises as fs } from 'fs'
+import { promises as fs, existsSync } from 'fs'
 import path from 'path'
 import { pinyin as getPinyin } from 'pinyin-pro'
 import databaseAPI from '../shared/database'
@@ -43,6 +43,9 @@ export class LocalShortcutsAPI {
       this.addShortcutByPath(filePath)
     )
     ipcMain.handle('local-shortcuts:delete', (_event, id: string) => this.deleteShortcut(id))
+    ipcMain.handle('local-shortcuts:delete-when-not-exist', (_event) =>
+      this.deleteNotExistShortcut()
+    )
     ipcMain.handle('local-shortcuts:open', (_event, shortcutPath: string) =>
       this.openShortcut(shortcutPath)
     )
@@ -387,6 +390,33 @@ export class LocalShortcutsAPI {
       return { success: true }
     } catch (error) {
       console.error('[LocalShortcut] 打开本地启动项失败:', error)
+      return { success: false, error: error instanceof Error ? error.message : '未知错误' }
+    }
+  }
+
+  private async deleteNotExistShortcut(): Promise<{ success: boolean; error?: string }> {
+    try {
+      const shortcuts = this.getAllShortcuts()
+      const { existShortcuts, notExistShortcuts } = shortcuts.reduce(
+        (acc, cur) => {
+          existsSync(cur.path) ? acc.existShortcuts.push(cur) : acc.notExistShortcuts.push(cur.id)
+          return acc
+        },
+        {
+          existShortcuts: [] as LocalShortcut[],
+          notExistShortcuts: [] as string[]
+        }
+      )
+      databaseAPI.dbPut(LOCAL_SHORTCUTS_KEY, existShortcuts)
+
+      console.log('[LocalShortcut] 删除失效本地启动项成功:', notExistShortcuts.toString())
+
+      // 通知渲染进程刷新本地启动项
+      this.mainWindow?.webContents.send('local-shortcuts-changed')
+
+      return { success: true }
+    } catch (error) {
+      console.error('[LocalShortcut] 删除失效本地启动项失败:', error)
       return { success: false, error: error instanceof Error ? error.message : '未知错误' }
     }
   }
