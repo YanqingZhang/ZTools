@@ -214,7 +214,6 @@ class ClipboardManager {
 
   // 处理剪贴板变化（原生事件已去重，直接处理）
   private async handleClipboardChange(): Promise<void> {
-    console.log('监听到剪贴板变化');
     try {
       let item: Partial<ClipboardItem> | null = null
 
@@ -237,7 +236,6 @@ class ClipboardManager {
       }
 
       if (item) {
-        console.log('[Clipboard] 新剪贴板内容:', item)
         await this.saveItem(item as ClipboardItem)
         // 通知插件剪贴板变化
         pluginManager?.sendPluginMessage('clipboard-change', item)
@@ -822,9 +820,12 @@ class ClipboardManager {
 
   /**
    * 等待下一次晚于指定序号的复制内容。
-   * 适用于已经主动触发了一次复制动作、只想等待那次新内容到达的场景。
+   * 若复制动作没有真正写入剪贴板，会在超时后返回 null，避免快捷键链路永久挂起。
    */
-  public waitForNextCopiedContent(minSequence: number): Promise<LastCopiedContent> {
+  public waitForNextCopiedContent(
+    minSequence: number,
+    timeoutMs: number = 1500
+  ): Promise<LastCopiedContent | null> {
     const latestContent = this.lastCopiedContent
     if (latestContent && latestContent.sequence > minSequence) {
       return Promise.resolve(latestContent)
@@ -832,7 +833,23 @@ class ClipboardManager {
 
     return new Promise((resolve) => {
       const waiters = this.lastCopiedSequenceWaiters.get(minSequence) ?? new Set()
-      waiters.add(resolve)
+      let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+        waiters.delete(wrappedResolve)
+        if (waiters.size === 0) {
+          this.lastCopiedSequenceWaiters.delete(minSequence)
+        }
+        resolve(null)
+      }, timeoutMs)
+
+      const wrappedResolve = (content: LastCopiedContent) => {
+        if (timer) {
+          clearTimeout(timer)
+          timer = null
+        }
+        resolve(content)
+      }
+
+      waiters.add(wrappedResolve)
       this.lastCopiedSequenceWaiters.set(minSequence, waiters)
     })
   }

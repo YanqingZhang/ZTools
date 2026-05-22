@@ -9,9 +9,13 @@ import { getCurrentShortcut, updateShortcut } from '../../index.js'
 import doubleTapManager from '../../core/doubleTapManager.js'
 import proxyManager from '../../managers/proxyManager.js'
 import windowManager from '../../managers/windowManager.js'
+import type { GlobalShortcutPreparation } from '../index'
+import api from '../index'
 import databaseAPI from '../shared/database'
 
 const GLOBAL_SHORTCUT_COOLDOWN_MS = 180
+const KEY_RELEASE_WAIT_TIMEOUT_MS = 1000
+const CLIPBOARD_COPY_WAIT_TIMEOUT_MS = 1500
 
 /**
  * 快捷键触发时携带的文件输入
@@ -246,18 +250,19 @@ export class SettingsAPI {
 
   /**
    * 注册全局快捷键。
-   * 触发时会先异步采集当前外部应用中的选中文本，再把上下文交给上层统一处理。
+   * 触发时会按需采集当前外部应用中的选中文本，再把上下文交给上层统一处理。
    */
   public registerGlobalShortcut(shortcut: string, target: string): any {
     try {
       this.ensureGlobalShortcutKeyboardState(shortcut)
+      const preparation = api.prepareGlobalShortcut(target)
 
       if (this.isDoubleTapShortcut(shortcut)) {
         const modifier = this.getDoubleTapModifier(shortcut)
         doubleTapManager.unregister(modifier)
         doubleTapManager.register(modifier, () => {
           console.log(`双击修饰键触发: ${shortcut} -> ${target}`)
-          void this.triggerGlobalShortcut(target)
+          void this.triggerGlobalShortcut(preparation)
         })
         console.log(`成功注册双击修饰键快捷键: ${shortcut} -> ${target}`)
         return { success: true }
@@ -268,7 +273,7 @@ export class SettingsAPI {
 
       const success = globalShortcut.register(shortcut, () => {
         console.log(`全局快捷键触发: ${shortcut} -> ${target}`)
-        void this.triggerGlobalShortcut(target)
+        void this.triggerGlobalShortcut(preparation)
       })
 
       if (!success) {
@@ -330,15 +335,17 @@ export class SettingsAPI {
 
   /**
    * 处理全局快捷键的统一触发入口。
-   * 这里会先采集外部应用的选中文本，再把带上下文的目标交给上层。
+   * 仅在目标命令需要文本上下文时才会执行复制取词，避免无关快捷键产生副作用。
    */
-  private async triggerGlobalShortcut(target: string): Promise<void> {
-    if (!this.shouldTriggerGlobalShortcut(target)) {
+  private async triggerGlobalShortcut(preparation: GlobalShortcutPreparation): Promise<void> {
+    if (!this.shouldTriggerGlobalShortcut(preparation.target)) {
       return
     }
 
-    const context = await this.captureSelectedTextContext()
-    await this.handleGlobalShortcut(target, context)
+    const context = preparation.shouldCaptureSelectedText
+      ? await this.captureSelectedTextContext()
+      : undefined
+    await this.handleGlobalShortcut(preparation.target, context)
   }
 
   /**
@@ -367,13 +374,16 @@ export class SettingsAPI {
    */
   private async captureSelectedTextContext(): Promise<ShortcutLaunchContext> {
     try {
-      await doubleTapManager.waitForAllKeysReleased()
+      await doubleTapManager.waitForAllKeysReleased(KEY_RELEASE_WAIT_TIMEOUT_MS)
 
       const lastSequence = clipboardManager.getLastCopiedSequence()
       const modifier = process.platform === 'darwin' ? 'meta' : 'ctrl'
       NativeWindowManager.simulateKeyboardTap('c', modifier)
 
-      const lastCopiedContent = await clipboardManager.waitForNextCopiedContent(lastSequence)
+      const lastCopiedContent = await clipboardManager.waitForNextCopiedContent(
+        lastSequence,
+        CLIPBOARD_COPY_WAIT_TIMEOUT_MS
+      )
 
       if (lastCopiedContent?.type === 'text' && typeof lastCopiedContent.data === 'string') {
         const text = lastCopiedContent.data

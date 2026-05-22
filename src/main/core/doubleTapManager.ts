@@ -85,15 +85,28 @@ class DoubleTapManager {
 
   /**
    * 等待当前所有按下的按键全部释放。
-   * 若当前没有按键处于按下状态，则立即返回。
+   * 若系统丢失了 keyup 事件，会在超时后继续，避免调用方永久挂起。
    */
-  waitForAllKeysReleased(): Promise<void> {
+  waitForAllKeysReleased(timeoutMs: number = 1000): Promise<void> {
     if (this.pressedKeycodes.size === 0) {
       return Promise.resolve()
     }
 
     return new Promise((resolve) => {
-      this.allKeysReleasedWaiters.add(resolve)
+      let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+        this.allKeysReleasedWaiters.delete(wrappedResolve)
+        resolve()
+      }, timeoutMs)
+
+      const wrappedResolve = () => {
+        if (timer) {
+          clearTimeout(timer)
+          timer = null
+        }
+        resolve()
+      }
+
+      this.allKeysReleasedWaiters.add(wrappedResolve)
     })
   }
 

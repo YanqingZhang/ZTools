@@ -69,6 +69,11 @@ interface ShortcutLaunchContext {
   pastedText: string | null
 }
 
+export interface GlobalShortcutPreparation {
+  target: string
+  shouldCaptureSelectedText: boolean
+}
+
 /**
  * API管理器 - 统一初始化和管理所有API模块
  */
@@ -251,6 +256,45 @@ class APIManager {
    */
   public resizeWindow(height: number): void {
     windowAPI.resizeWindow(height)
+  }
+
+  /**
+   * 预解析全局快捷键目标，判断启动前是否需要采集选中文本。
+   * 仅文本类插件命令会触发复制取词，避免无关快捷键产生副作用。
+   */
+  public prepareGlobalShortcut(target: string): GlobalShortcutPreparation {
+    try {
+      const parts = target.split('/')
+      if (parts.length !== 2) {
+        return { target, shouldCaptureSelectedText: false }
+      }
+
+      const plugins: any = databaseAPI.dbGet('plugins')
+      const disabledPlugins = pluginsAPI.getDisabledPluginSet()
+      const pluginList = Array.isArray(plugins)
+        ? plugins.filter((plugin: any) => !disabledPlugins.has(plugin.path))
+        : []
+
+      const [pluginDescription, cmdName] = parts
+      const plugin = pluginList.find(
+        (p: any) => p.name === pluginDescription || p.title === pluginDescription
+      )
+      if (!plugin) {
+        return { target, shouldCaptureSelectedText: false }
+      }
+
+      const result = this.findCommandInPlugin(plugin, cmdName)
+      if (!result) {
+        return { target, shouldCaptureSelectedText: false }
+      }
+
+      return {
+        target,
+        shouldCaptureSelectedText: result.cmdType === 'text' || result.cmdType === 'over' || result.cmdType === 'regex'
+      }
+    } catch {
+      return { target, shouldCaptureSelectedText: false }
+    }
   }
 
   /**
