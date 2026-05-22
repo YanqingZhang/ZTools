@@ -32,6 +32,9 @@ class DoubleTapManager {
   private nonModifierPressed = false
   private started = false
   private listenersRegistered = false
+  private pressedKeycodes = new Set<number>()
+  private allKeysReleasedWaiters = new Set<() => void>()
+  private keepAliveCount = 0
 
   // 双击最大间隔（毫秒）
   private readonly DOUBLE_TAP_INTERVAL = 400
@@ -55,9 +58,7 @@ class DoubleTapManager {
   unregister(modifier: string): void {
     const normalized = normalizeModifier(modifier)
     this.handlers = this.handlers.filter((h) => h.modifier !== normalized)
-    if (this.handlers.length === 0) {
-      this.stop()
-    }
+    this.maybeStop()
   }
 
   /**
@@ -65,14 +66,35 @@ class DoubleTapManager {
    */
   unregisterAll(): void {
     this.handlers = []
-    this.stop()
+    this.maybeStop()
   }
 
   /**
-   * 检查是否有指定修饰键的已注册回调
+   * 临时保持全局键盘监听开启。
+   * 用于需要感知按键释放时机但并未注册双击回调的场景。
    */
-  has(modifier: string): boolean {
-    return this.handlers.some((h) => h.modifier === normalizeModifier(modifier))
+  acquireKeyboardState(): () => void {
+    this.keepAliveCount += 1
+    this.ensureStarted()
+
+    return () => {
+      this.keepAliveCount = Math.max(0, this.keepAliveCount - 1)
+      this.maybeStop()
+    }
+  }
+
+  /**
+   * 等待当前所有按下的按键全部释放。
+   * 若当前没有按键处于按下状态，则立即返回。
+   */
+  waitForAllKeysReleased(): Promise<void> {
+    if (this.pressedKeycodes.size === 0) {
+      return Promise.resolve()
+    }
+
+    return new Promise((resolve) => {
+      this.allKeysReleasedWaiters.add(resolve)
+    })
   }
 
   private ensureStarted(): void {
@@ -106,9 +128,20 @@ class DoubleTapManager {
     this.started = false
     this.lastModifierUp = null
     this.nonModifierPressed = false
+    this.modifierDownTime = 0
+    this.pressedKeycodes.clear()
+    this.resolveAllKeysReleasedWaiters()
+  }
+
+  private maybeStop(): void {
+    if (this.handlers.length === 0 && this.keepAliveCount === 0) {
+      this.stop()
+    }
   }
 
   private handleKeyDown(e: { keycode: number }): void {
+    this.pressedKeycodes.add(e.keycode)
+
     const modifier = MODIFIER_KEYCODES[e.keycode]
     if (modifier) {
       if (this.modifierDownTime === 0) {
@@ -122,6 +155,11 @@ class DoubleTapManager {
   }
 
   private handleKeyUp(e: { keycode: number }): void {
+    this.pressedKeycodes.delete(e.keycode)
+    if (this.pressedKeycodes.size === 0) {
+      this.resolveAllKeysReleasedWaiters()
+    }
+
     const modifier = MODIFIER_KEYCODES[e.keycode]
     if (!modifier) {
       this.nonModifierPressed = false
@@ -159,6 +197,17 @@ class DoubleTapManager {
 
     // 记录为第一次 tap
     this.lastModifierUp = { modifier, time: now }
+  }
+
+  private resolveAllKeysReleasedWaiters(): void {
+    if (this.allKeysReleasedWaiters.size === 0) {
+      return
+    }
+
+    for (const resolve of this.allKeysReleasedWaiters) {
+      resolve()
+    }
+    this.allKeysReleasedWaiters.clear()
   }
 
   private fireHandlers(modifier: string): void {

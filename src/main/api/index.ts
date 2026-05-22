@@ -156,7 +156,7 @@ class APIManager {
     this.setupSpecialHandlers()
 
     // 设置全局快捷键处理器（需要访问多个模块）
-    settingsAPI.setGlobalShortcutHandler((target) => this.handleGlobalShortcut(target))
+    settingsAPI.setGlobalShortcutHandler((target, context) => this.handleGlobalShortcut(target, context))
   }
 
   /**
