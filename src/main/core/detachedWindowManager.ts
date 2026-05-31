@@ -491,6 +491,9 @@ class DetachedWindowManager {
     for (const windowInfo of this.detachedWindowMap.values()) {
       if (windowInfo.pluginPath === pluginPath && !windowInfo.window.isDestroyed()) {
         if (windowInfo.window.isMinimized()) windowInfo.window.restore()
+        // fix: macOS 上分离窗口即使已经是显示状态，也可能被其他 App/window 完全盖住，
+        // 单独 focus() 不一定能提升窗口层级，所以先 show() 再 focus()，确保重入插件时窗口前置。
+        if (process.platform === 'darwin') windowInfo.window.show()
         windowInfo.window.focus()
         return true
       }
