@@ -417,7 +417,14 @@ const api = {
   },
   superPanelAddBlockedApp: () => ipcRenderer.invoke('super-panel:add-blocked-app'),
   // 超级面板窗口匹配
-  superPanelSearchWindowCommands: (windowInfo: { app?: string; title?: string }) =>
+  superPanelGetFileLocationWindows: () => ipcRenderer.invoke('super-panel:get-file-location-windows'),
+  superPanelIsFileLocationWindow: (hwnd: number) =>
+    ipcRenderer.invoke('super-panel:is-file-location-window', hwnd),
+  superPanelSetFileLocationAddressBar: (
+    target: number | FileLocationWindowInfo,
+    address: string
+  ) => ipcRenderer.invoke('super-panel:set-file-location-address-bar', target, address),
+  superPanelSearchWindowCommands: (windowInfo: SuperPanelWindowInfo) =>
     ipcRenderer.invoke('super-panel:search-window-commands', windowInfo),
   onSuperPanelWindowCommandsData: (callback: (data: { results: any[] }) => void) => {
     ipcRenderer.on('super-panel-window-commands-data', (_event, data) => callback(data))
@@ -426,11 +433,9 @@ const api = {
     ipcRenderer.on('super-panel-translation', (_event, data) => callback(data))
   },
   onSuperPanelSearchWindowCommands: (
-    callback: (windowInfo: { app?: string; title?: string }) => void
+    callback: (data: { requestId: number; windowInfo: SuperPanelWindowInfo }) => void
   ) => {
-    ipcRenderer.on('super-panel-search-window-commands', (_event, windowInfo) =>
-      callback(windowInfo)
-    )
+    ipcRenderer.on('super-panel-search-window-commands', (_event, data) => callback(data))
   },
   sendSuperPanelWindowCommandsResult: (data: { results: any[] }) => {
     ipcRenderer.send('super-panel-window-commands-result', data)
@@ -454,6 +459,26 @@ contextBridge.exposeInMainWorld('electron', {
 })
 
 // TypeScript 类型定义
+type SuperPanelWindowInfo = {
+  platform?: 'win32' | 'darwin'
+  kind?: 'windows-explorer' | 'windows-file-dialog' | 'mac-finder' | 'mac-file-dialog'
+  preciseTarget?: boolean
+  app?: string
+  title?: string
+  className?: string
+  hwnd?: number
+  windowId?: number
+  finderId?: number
+  bundleId?: string
+  pid?: number
+  path?: string
+  url?: string
+  axRole?: string
+  axSubrole?: string
+}
+
+type FileLocationWindowInfo = SuperPanelWindowInfo
+
 declare global {
   interface Window {
     electron: {
@@ -717,6 +742,20 @@ declare global {
         path: string,
         featureCode?: string
       ) => Promise<{ success: boolean; error?: string }>
+      superPanelGetFileLocationWindows: () => Promise<Array<FileLocationWindowInfo | string>>
+      superPanelIsFileLocationWindow: (
+        hwnd: number
+      ) => Promise<{ supported: boolean; isFileLocation: boolean }>
+      superPanelSetFileLocationAddressBar: (
+        target: number | FileLocationWindowInfo,
+        address: string
+      ) => Promise<boolean>
+      superPanelSearchWindowCommands: (windowInfo: SuperPanelWindowInfo) => Promise<void>
+      onSuperPanelWindowCommandsData: (callback: (data: { requestId?: number; results: any[] }) => void) => void
+      onSuperPanelSearchWindowCommands: (
+        callback: (data: { requestId: number; windowInfo: SuperPanelWindowInfo }) => void
+      ) => void
+      sendSuperPanelWindowCommandsResult: (data: { requestId: number; results: any[] }) => void
       // AI 模型管理
       aiModels: {
         getAll: () => Promise<{ success: boolean; data?: any[]; error?: string }>

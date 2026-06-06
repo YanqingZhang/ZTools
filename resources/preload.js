@@ -539,7 +539,10 @@ window.ztools = {
   // 显示文件保存对话框
   showSaveDialog: (options) => electron.ipcRenderer.sendSync('show-save-dialog', options),
   // 显示文件打开对话框
-  showOpenDialog: (options) => electron.ipcRenderer.sendSync('show-open-dialog', options),
+  showOpenDialog: (options) => {
+    const data = electron.ipcRenderer.sendSync('show-open-dialog', options);
+    return data;
+  },
   // 屏幕截图
   screenCapture: async (callback) => {
     const { image, bounds } = await electron.ipcRenderer.invoke('screen-capture')

@@ -50,7 +50,10 @@ interface ClipboardItem {
 
 // 窗口激活信息
 interface WindowActivationInfo {
-  app: string
+  app?: string
+  platform?: 'win32' | 'darwin'
+  kind?: 'windows-explorer' | 'windows-file-dialog' | 'mac-finder' | 'mac-file-dialog'
+  preciseTarget?: boolean
   bundleId?: string
   pid?: number
   title?: string
@@ -61,6 +64,12 @@ interface WindowActivationInfo {
   appPath?: string
   className?: string // Windows 窗口类名（CabinetWClass/Progman/WorkerW 等）
   hwnd?: number // Windows 窗口句柄（用于 COM 查询 Explorer 路径）
+  windowId?: number
+  finderId?: number
+  path?: string
+  url?: string
+  axRole?: string
+  axSubrole?: string
 }
 
 // 配置

@@ -324,30 +324,59 @@
             </div>
           </div>
           <div class="window-match-list">
-            <div
-              v-for="(item, index) in windowMatchResults"
-              :key="`wm-${item.path}-${item.featureCode || ''}`"
-              class="list-item"
-              :class="{ selected: index === windowMatchSelectedIndex }"
-              @click="launchWindowMatch(item)"
-              @mouseenter="windowMatchSelectedIndex = index"
-            >
-              <img
-                v-if="item.icon && !iconErrors.has(getItemKey(item))"
-                :src="item.icon"
-                class="list-icon"
-                draggable="false"
-                @error="iconErrors.add(getItemKey(item))"
-              />
-              <div v-else class="list-icon-placeholder">
-                {{ item.name.charAt(0).toUpperCase() }}
-              </div>
-              <div class="list-info">
-                <span class="list-name">{{ item.name }}</span>
-                <span v-if="item.pluginExplain" class="list-desc">{{ item.pluginExplain }}</span>
+            <div v-if="fileLocationJumpTargets.length > 0" class="window-match-section">
+              <div class="window-match-section-title">快捷跳转</div>
+              <div
+                v-for="(item, index) in fileLocationJumpTargets"
+                :key="getFileLocationJumpKey(item, index)"
+                class="list-item file-location-jump-item"
+                :class="{ selected: index === windowMatchSelectedIndex }"
+                @click="jumpToFileLocationTarget(item)"
+                @mouseenter="windowMatchSelectedIndex = index"
+              >
+                <div class="list-icon-placeholder">跳</div>
+                <div class="list-info">
+                  <span class="list-name">{{ formatFileLocationJumpPath(item) }}</span>
+                  <span v-if="item.title" class="list-desc">{{ item.title }}</span>
+                </div>
               </div>
             </div>
-            <div v-if="windowMatchResults.length === 0" class="empty-state window-match-empty">
+            <div v-if="windowMatchResults.length > 0" class="window-match-section">
+              <div v-if="fileLocationJumpTargets.length > 0" class="window-match-section-title">窗口命令</div>
+              <div
+                v-for="(item, index) in windowMatchResults"
+                :key="`wm-${item.path}-${item.featureCode || ''}`"
+                class="list-item"
+                :class="{
+                  selected: fileLocationJumpTargets.length + index === windowMatchSelectedIndex
+                }"
+                @click="launchWindowMatch(item)"
+                @mouseenter="windowMatchSelectedIndex = fileLocationJumpTargets.length + index"
+              >
+                <img
+                  v-if="item.icon && !iconErrors.has(getItemKey(item))"
+                  :src="item.icon"
+                  class="list-icon"
+                  draggable="false"
+                  @error="iconErrors.add(getItemKey(item))"
+                />
+                <div v-else class="list-icon-placeholder">
+                  {{ item.name.charAt(0).toUpperCase() }}
+                </div>
+                <div class="list-info">
+                  <span class="list-name">{{ item.name }}</span>
+                  <span v-if="item.pluginExplain" class="list-desc">{{ item.pluginExplain }}</span>
+                </div>
+              </div>
+            </div>
+            <div
+              v-if="
+                windowMatchResults.length === 0 &&
+                fileLocationJumpTargets.length === 0 &&
+                !fileLocationJumpLoading
+              "
+              class="empty-state window-match-empty"
+            >
               <span class="empty-text">无匹配结果</span>
             </div>
           </div>
@@ -408,6 +437,40 @@ interface ClipboardContent {
   files?: Array<{ path: string; name: string; isDirectory: boolean }>
 }
 
+interface CurrentWindowInfo {
+  platform?: 'win32' | 'darwin'
+  kind?: 'windows-explorer' | 'windows-file-dialog' | 'mac-finder' | 'mac-file-dialog'
+  preciseTarget?: boolean
+  app?: string
+  title?: string
+  className?: string
+  hwnd?: number
+  windowId?: number
+  finderId?: number
+  bundleId?: string
+  pid?: number
+  path?: string
+  url?: string
+  axRole?: string
+  axSubrole?: string
+}
+
+interface FileLocationJumpTarget extends CurrentWindowInfo {}
+
+type FileLocationAddressBarTarget = Pick<
+  CurrentWindowInfo,
+  | 'platform'
+  | 'kind'
+  | 'preciseTarget'
+  | 'hwnd'
+  | 'windowId'
+  | 'finderId'
+  | 'bundleId'
+  | 'pid'
+  | 'axRole'
+  | 'axSubrole'
+>
+
 const mode = ref<'pinned' | 'search' | 'loading'>('loading')
 const pinnedCommands = ref<GridItem[]>([])
 const searchResults = ref<CommandItem[]>([])
@@ -428,7 +491,10 @@ const customColor = ref('#db2777')
 const showWindowMatch = ref(false)
 const windowMatchResults = ref<CommandItem[]>([])
 const windowMatchSelectedIndex = ref(0)
-const currentWindowInfo = ref<{ app?: string; title?: string } | null>(null)
+const currentWindowInfo = ref<CurrentWindowInfo | null>(null)
+const fileLocationJumpTargets = ref<FileLocationJumpTarget[]>([])
+const fileLocationJumpLoading = ref(false)
+let fileLocationJumpRequestId = 0
 // 窗口匹配图标闪动
 const windowMatchBlink = ref(false)
 
@@ -774,6 +840,8 @@ function openWindowMatch(): void {
   showWindowMatch.value = true
   windowMatchBlink.value = false
   windowMatchSelectedIndex.value = 0
+  fileLocationJumpTargets.value = []
+  loadFileLocationJumpTargets()
   // 如果已有结果（自动搜索过），直接使用；否则发起搜索
   if (windowMatchResults.value.length === 0 && currentWindowInfo.value) {
     window.ztools.superPanelSearchWindowCommands(
@@ -785,12 +853,273 @@ function openWindowMatch(): void {
 // 关闭窗口匹配面板
 function closeWindowMatch(): void {
   showWindowMatch.value = false
+  fileLocationJumpRequestId++
+}
+
+// 判断当前触发窗口是否为可精确定位的文件位置窗口
+async function getCurrentFileLocationWindowKind(): Promise<CurrentWindowInfo['kind'] | null> {
+  const info = currentWindowInfo.value
+  console.log('object', info);
+  if (!info) return null
+
+  const platform = window.ztools.getPlatform()
+  if (info.preciseTarget && info.kind) {
+    if (info.kind === 'windows-explorer' && platform === 'win32' && hasWindowsAddressBarTarget(info)) {
+      return info.kind
+    }
+    if (info.kind === 'windows-file-dialog' && platform === 'win32' && hasWindowsAddressBarTarget(info)) {
+      return info.kind
+    }
+    if (info.kind === 'mac-finder' && platform === 'darwin' && hasMacAddressBarTarget(info)) {
+      return info.kind
+    }
+    if (info.kind === 'mac-file-dialog' && platform === 'darwin' && hasMacAddressBarTarget(info)) {
+      return info.kind
+    }
+  }
+
+  if (platform === 'win32' && hasWindowsAddressBarTarget(info)) {
+    if (info.className === 'CabinetWClass' || info.className === 'ExploreWClass') {
+      return 'windows-explorer'
+    }
+    if (await isWindowsFileDialogWindow(info)) {
+      return 'windows-file-dialog'
+    }
+  }
+
+  return null
+}
+
+// 判断 Windows 当前窗口是否为可跳转的文件对话框
+async function isWindowsFileDialogWindow(info: CurrentWindowInfo): Promise<boolean> {
+  if (info.className !== '#32770' || !info.hwnd) return false
+
+  try {
+    const result = await window.ztools.superPanelIsFileLocationWindow(info.hwnd)
+    return result.supported
+  } catch (error) {
+    console.error('[SuperPanel] 判断 Windows 文件对话框失败:', error)
+  }
+
+  return isCommonWindowsFileDialogTitle(info.title)
+}
+
+// 判断 Windows 文件对话框的常见标题
+function isCommonWindowsFileDialogTitle(title?: string): boolean {
+  return /^(打开|开启|选择|另存为|保存|Open|Choose|Select|Save|Save As)$/i.test(
+    title?.trim() || ''
+  )
+}
+
+// 判断 Windows 当前窗口是否有可传给地址栏设置的窗口句柄
+function hasWindowsAddressBarTarget(info: CurrentWindowInfo): boolean {
+  return typeof info.hwnd === 'number' && Number.isFinite(info.hwnd) && info.hwnd > 0
+}
+
+function hasMacAddressBarTarget(info: CurrentWindowInfo): boolean {
+  if (!info.preciseTarget) return false
+  if (info.kind === 'mac-finder') {
+    return typeof info.finderId === 'number' && Number.isFinite(info.finderId) && info.finderId > 0
+  }
+  if (info.kind === 'mac-file-dialog') {
+    return typeof info.pid === 'number' && Number.isFinite(info.pid) && info.pid > 0
+  }
+  return false
+}
+
+// 标准化文件位置字符串用于比较
+function normalizeFileLocation(value?: string): string | null {
+  if (!value) return null
+  let normalized = value.trim()
+  if (!normalized) return null
+
+  normalized = normalized.replace(/^file:\/\/\//i, '')
+  normalized = normalized.replace(/^file:\/\//i, '')
+  normalized = normalized.replace(/^\/([A-Za-z]:\/)/, '$1')
+
+  try {
+    normalized = decodeURIComponent(normalized)
+  } catch {
+    // 保留原值用于后续比较
+  }
+
+  normalized = normalized.replace(/\\/g, '/')
+  if (window.ztools.getPlatform() === 'win32') {
+    normalized = normalized.toLowerCase()
+  }
+  return normalized.replace(/\/+$/, '')
+}
+
+// 比较两个文件位置字段是否指向同一地址
+function isSameFileLocation(a?: string, b?: string): boolean {
+  const left = normalizeFileLocation(a)
+  const right = normalizeFileLocation(b)
+  return Boolean(left && right && left === right)
+}
+
+// 生成快捷跳转列表项的稳定 key
+function getFileLocationJumpKey(target: FileLocationJumpTarget, index: number): string {
+  return [target.path, target.url, target.hwnd, target.title, target.bundleId, target.pid, index]
+    .filter((part) => part !== undefined && part !== null && part !== '')
+    .join('|')
+}
+
+// 判断快捷跳转目标是否为当前窗口
+function isCurrentFileLocationTarget(
+  target: FileLocationJumpTarget,
+  currentWindow: CurrentWindowInfo
+): boolean {
+  if (currentWindow.hwnd && target.hwnd) {
+    return target.hwnd === currentWindow.hwnd
+  }
+  if (currentWindow.finderId && target.finderId) {
+    return target.finderId === currentWindow.finderId
+  }
+  if (currentWindow.windowId && target.windowId) {
+    return target.windowId === currentWindow.windowId
+  }
+  return (
+    isSameFileLocation(target.path, currentWindow.path) ||
+    isSameFileLocation(target.url, currentWindow.url) ||
+    isSameFileLocation(target.path, currentWindow.url) ||
+    isSameFileLocation(target.url, currentWindow.path)
+  )
+}
+
+// 加载其它文件位置窗口作为快捷跳转目标
+async function loadFileLocationJumpTargets(): Promise<void> {
+  fileLocationJumpTargets.value = []
+  const requestId = ++fileLocationJumpRequestId
+  const currentKind = await getCurrentFileLocationWindowKind()
+  if (requestId !== fileLocationJumpRequestId) {
+    return
+  }
+  if (!currentKind) {
+    console.log('[SuperPanel] 当前窗口不是文件位置窗口，跳过快捷跳转目标加载:', currentWindowInfo.value)
+    return
+  }
+
+  const currentWindow = currentWindowInfo.value
+  fileLocationJumpLoading.value = true
+
+  try {
+    const rawWindows = (await window.ztools.superPanelGetFileLocationWindows()) as Array<
+      FileLocationJumpTarget | string
+    >
+    const windows = (rawWindows || []).map((item) =>
+      typeof item === 'string' ? { path: item, url: item } : item
+    )
+    if (requestId !== fileLocationJumpRequestId) {
+      return
+    }
+
+    fileLocationJumpTargets.value = (windows || [])
+      .filter((item) => item?.path || item?.url)
+      .filter((item) => currentWindow && !isCurrentFileLocationTarget(item, currentWindow))
+    windowMatchSelectedIndex.value = 0
+    console.log('[SuperPanel] 文件位置快捷跳转目标已加载:', {
+      currentKind,
+      currentWindow,
+      total: windows?.length || 0,
+      targets: fileLocationJumpTargets.value.length
+    })
+  } catch (error) {
+    console.error('[SuperPanel] 加载文件位置快捷跳转失败:', error)
+    fileLocationJumpTargets.value = []
+  } finally {
+    if (requestId === fileLocationJumpRequestId) {
+      fileLocationJumpLoading.value = false
+    }
+  }
+}
+
+// 格式化快捷跳转路径展示文本
+function formatFileLocationJumpPath(target: FileLocationJumpTarget): string {
+  const rawPath = target.path || target.url || target.title || ''
+  if (/^file:\/\/\//i.test(rawPath)) {
+    const withoutScheme = rawPath.replace(/^file:\/\/\//i, '')
+    return withoutScheme.replace(/^\/([A-Za-z]:\/)/, '$1')
+  }
+  return rawPath.replace(/^file:\/\//i, '')
+}
+
+// 生成可安全传递给 IPC 的文件位置窗口标识
+function toFileLocationAddressBarTarget(
+  windowInfo: CurrentWindowInfo
+): FileLocationAddressBarTarget | null {
+  const platform = window.ztools.getPlatform()
+  if (platform === 'win32') {
+    return hasWindowsAddressBarTarget(windowInfo) ? { hwnd: windowInfo.hwnd } : null
+  }
+  if (platform === 'darwin' && hasMacAddressBarTarget(windowInfo)) {
+    return {
+      platform: 'darwin',
+      kind: windowInfo.kind,
+      preciseTarget: windowInfo.preciseTarget,
+      windowId: windowInfo.windowId,
+      finderId: windowInfo.finderId,
+      bundleId: windowInfo.bundleId,
+      pid: windowInfo.pid,
+      axRole: windowInfo.axRole,
+      axSubrole: windowInfo.axSubrole
+    }
+  }
+  return null
+}
+
+// 将当前文件位置窗口跳转到目标路径
+async function jumpToFileLocationTarget(target: FileLocationJumpTarget): Promise<void> {
+  const currentWindow = currentWindowInfo.value
+  const address = target.path || target.url
+  if (!currentWindow || !address) return
+
+  try {
+    const addressBarTarget = toFileLocationAddressBarTarget(currentWindow)
+    if (!addressBarTarget) return
+
+    console.log('[SuperPanel] 准备执行文件位置快捷跳转:', {
+      currentWindow: addressBarTarget,
+      target,
+      address
+    })
+    const success = await window.ztools.superPanelSetFileLocationAddressBar(
+      addressBarTarget,
+      address
+    )
+    console.log('[SuperPanel] 文件位置快捷跳转结果:', success)
+    if (success) {
+      closeWindowMatch()
+      window.close()
+    }
+  } catch (error) {
+    console.error('[SuperPanel] 文件位置快捷跳转失败:', error)
+  }
 }
 
 // 从窗口匹配面板启动指令
 async function launchWindowMatch(cmd: CommandItem): Promise<void> {
   closeWindowMatch()
   await launch(cmd)
+}
+
+// 获取窗口匹配面板可操作项总数
+function getWindowMatchItemCount(): number {
+  return fileLocationJumpTargets.value.length + windowMatchResults.value.length
+}
+
+// 启动当前选中的窗口匹配面板项
+function launchSelectedWindowMatchItem(): void {
+  const jumpTarget = fileLocationJumpTargets.value[windowMatchSelectedIndex.value]
+  if (jumpTarget) {
+    jumpToFileLocationTarget(jumpTarget)
+    return
+  }
+
+  const commandIndex = windowMatchSelectedIndex.value - fileLocationJumpTargets.value.length
+  const command = windowMatchResults.value[commandIndex]
+  if (command) {
+    launchWindowMatch(command)
+  }
 }
 
 function getItemKey(item: GridItem): string {
@@ -825,6 +1154,34 @@ async function launch(cmd: CommandItem): Promise<void> {
 
 // 键盘导航
 function handleKeydown(event: KeyboardEvent): void {
+  if (showWindowMatch.value) {
+    const itemCount = getWindowMatchItemCount()
+    switch (event.key) {
+      case 'ArrowUp':
+        event.preventDefault()
+        if (itemCount > 0 && windowMatchSelectedIndex.value > 0) {
+          windowMatchSelectedIndex.value--
+        }
+        break
+      case 'ArrowDown':
+        event.preventDefault()
+        if (itemCount > 0 && windowMatchSelectedIndex.value < itemCount - 1) {
+          windowMatchSelectedIndex.value++
+        }
+        break
+      case 'Enter':
+        event.preventDefault()
+        launchSelectedWindowMatchItem()
+        break
+      case 'Escape':
+        event.preventDefault()
+        closeWindowMatch()
+        break
+    }
+    scrollToSelected()
+    return
+  }
+
   const list = getCurrentList()
   if (list.length === 0) return
 
@@ -946,13 +1303,14 @@ onMounted(() => {
       data.commands?.length || data.results?.length || 0
     )
     // 保存窗口信息
-    if (data.windowInfo) {
-      currentWindowInfo.value = data.windowInfo
-    }
+    currentWindowInfo.value = data.windowInfo ?? null
     // 收到新数据时关闭窗口匹配面板、重置闪动状态
     showWindowMatch.value = false
+    fileLocationJumpRequestId++
     windowMatchBlink.value = false
     windowMatchResults.value = []
+    fileLocationJumpTargets.value = []
+    fileLocationJumpLoading.value = false
 
     // 自动发起窗口匹配搜索（用于判断是否需要闪动图标）
     if (data.windowInfo) {
@@ -1570,6 +1928,38 @@ onUnmounted(() => {
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+}
+
+.window-match-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.window-match-section + .window-match-section {
+  margin-top: 6px;
+}
+
+.window-match-section-title {
+  padding: 6px 8px 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.file-location-jump-item {
+  align-items: flex-start;
+}
+
+.file-location-jump-item .list-name {
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 
 .window-match-empty {

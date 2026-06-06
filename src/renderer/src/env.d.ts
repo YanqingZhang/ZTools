@@ -11,6 +11,26 @@ interface LastMatchState {
   timestamp: number
 }
 
+interface SuperPanelWindowInfo {
+  platform?: 'win32' | 'darwin'
+  kind?: 'windows-explorer' | 'windows-file-dialog' | 'mac-finder' | 'mac-file-dialog'
+  preciseTarget?: boolean
+  app?: string
+  title?: string
+  className?: string
+  hwnd?: number
+  windowId?: number
+  finderId?: number
+  bundleId?: string
+  pid?: number
+  path?: string
+  url?: string
+  axRole?: string
+  axSubrole?: string
+}
+
+interface FileLocationWindowInfo extends SuperPanelWindowInfo {}
+
 declare global {
   interface Window {
     electron: {
@@ -391,7 +411,7 @@ declare global {
           commands?: any[]
           results?: any[]
           clipboardContent?: any
-          windowInfo?: { app?: string; title?: string }
+          windowInfo?: SuperPanelWindowInfo | null
         }) => void
       ) => void
       superPanelLaunch: (command: any) => Promise<{ success: boolean; error?: string }>
@@ -412,18 +432,25 @@ declare global {
       ) => void
       superPanelAddBlockedApp: () => Promise<{ success: boolean; app?: string; error?: string }>
       // 超级面板窗口匹配
-      superPanelSearchWindowCommands: (windowInfo: {
-        app?: string
-        title?: string
-      }) => Promise<void>
-      onSuperPanelWindowCommandsData: (callback: (data: { results: any[] }) => void) => void
+      superPanelGetFileLocationWindows: () => Promise<Array<FileLocationWindowInfo | string>>
+      superPanelIsFileLocationWindow: (
+        hwnd: number
+      ) => Promise<{ supported: boolean; isFileLocation: boolean }>
+      superPanelSetFileLocationAddressBar: (
+        target: number | FileLocationWindowInfo,
+        address: string
+      ) => Promise<boolean>
+      superPanelSearchWindowCommands: (windowInfo: SuperPanelWindowInfo) => Promise<void>
+      onSuperPanelWindowCommandsData: (
+        callback: (data: { requestId?: number; results: any[] }) => void
+      ) => void
       onSuperPanelTranslation: (
         callback: (data: { text: string; sourceText?: string }) => void
       ) => void
       onSuperPanelSearchWindowCommands: (
-        callback: (windowInfo: { app?: string; title?: string }) => void
+        callback: (data: { requestId: number; windowInfo: SuperPanelWindowInfo }) => void
       ) => void
-      sendSuperPanelWindowCommandsResult: (data: { results: any[] }) => void
+      sendSuperPanelWindowCommandsResult: (data: { requestId: number; results: any[] }) => void
       onFloatingBallFiles: (
         callback: (files: Array<{ path: string; name: string; isDirectory: boolean }>) => void
       ) => void

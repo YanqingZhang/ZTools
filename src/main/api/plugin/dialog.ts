@@ -76,10 +76,15 @@ export class PluginDialogAPI {
           event.returnValue = undefined
           return
         }
-        const result = windowManager.withBlurHideSuppressedSync(() =>
-          dialog.showSaveDialogSync(targetWindow, options)
-        )
-        event.returnValue = result
+        windowManager
+          .withBlurHideSuppressed(() => dialog.showSaveDialog(targetWindow, options))
+          .then((data: Electron.SaveDialogReturnValue) => {
+            event.returnValue = data.canceled ? undefined : data.filePath
+          })
+          .catch((error: Error) => {
+            console.error('[PluginDialog] 显示文件保存对话框失败:', error)
+            event.returnValue = undefined
+          })
       } catch (error) {
         console.error('[PluginDialog] 显示文件保存对话框失败:', error)
         event.returnValue = undefined
@@ -97,10 +102,15 @@ export class PluginDialogAPI {
           event.returnValue = []
           return
         }
-        const result = windowManager.withBlurHideSuppressedSync(() =>
-          dialog.showOpenDialogSync(targetWindow, options)
-        )
-        event.returnValue = result || []
+        windowManager
+          .withBlurHideSuppressed(() => dialog.showOpenDialog(targetWindow, options))
+          .then((data: Electron.OpenDialogReturnValue) => {
+            event.returnValue = data.canceled ? [] : data.filePaths
+          })
+          .catch((error: Error) => {
+            console.error('[PluginDialog] 显示文件打开对话框失败:', error)
+            event.returnValue = []
+          })
       } catch (error) {
         console.error('[PluginDialog] 显示文件打开对话框失败:', error)
         event.returnValue = []

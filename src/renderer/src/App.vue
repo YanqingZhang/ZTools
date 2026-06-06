@@ -943,12 +943,27 @@ onMounted(async () => {
   })
 
   // 监听超级面板窗口匹配搜索请求
-  window.ztools.onSuperPanelSearchWindowCommands((windowInfo: { app?: string; title?: string }) => {
-    const results = commandDataStore.searchWindowCommands(windowInfo)
-    window.ztools.sendSuperPanelWindowCommandsResult({
-      results: JSON.parse(JSON.stringify(results))
-    })
-  })
+  window.ztools.onSuperPanelSearchWindowCommands(
+    (data: {
+      requestId: number
+      windowInfo: {
+        app?: string
+        title?: string
+        className?: string
+        hwnd?: number
+        bundleId?: string
+        pid?: number
+      }
+    }) => {
+      console.log('[超级面板窗口匹配] 收到搜索请求:', data.windowInfo)
+      const results = commandDataStore.searchWindowCommands(data.windowInfo)
+      console.log('[超级面板窗口匹配] 返回结果数:', results.length)
+      window.ztools.sendSuperPanelWindowCommandsResult({
+        requestId: data.requestId,
+        results: JSON.parse(JSON.stringify(results))
+      })
+    }
+  )
 
   // 监听超级面板启动事件（由主进程从超级面板转发）
   window.ztools.onSuperPanelLaunch(

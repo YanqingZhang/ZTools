@@ -1,7 +1,7 @@
 import { BrowserWindow, ipcMain, screen } from 'electron'
 import path from 'path'
 import { is } from '@electron-toolkit/utils'
-import { MouseMonitor, WindowManager, type MouseMonitorResult } from './native/index.js'
+import { MouseMonitor, WindowManager, type FileLocationWindowInfo, type MouseMonitorResult } from './native/index.js'
 import { launchApp } from './commandLauncher/index.js'
 import databaseAPI from '../api/shared/database.js'
 import pluginsAPI from '../api/renderer/plugins.js'
@@ -10,6 +10,7 @@ import clipboardManager, { type LastCopiedContent } from '../managers/clipboardM
 import { applyWindowMaterial, getDefaultWindowMaterial } from '../utils/windowUtils.js'
 import translationManager from './translationManager.js'
 import { filterSuperPanelPinnedCommands } from './superPanelPinnedCommands.js'
+import { decodeFileUrlToPath } from '../utils/common'
 
 // 超级面板窗口尺寸
 const SUPER_PANEL_WIDTH = 250
@@ -48,6 +49,8 @@ class SuperPanelManager {
   private mainWindow: BrowserWindow | null = null
   private windowReady = false
   private pendingMessages: Array<{ channel: string; data: any }> = []
+  private windowCommandRequestId = 0
+  private activeWindowCommandRequestId: number | null = null
   private config: SuperPanelConfig = {
     enabled: false,
     mouseButton: 'middle',
@@ -142,6 +145,42 @@ class SuperPanelManager {
     return false
   }
 
+  private enrichFileLocationWindowInfo<
+    T extends { className?: string; hwnd?: number | null; path?: string; url?: string }
+  >(windowInfo: T | null): T | null {
+    if (process.platform !== 'win32' || !windowInfo) {
+      return windowInfo
+    }
+
+    if (windowInfo.className !== 'CabinetWClass' && windowInfo.className !== 'ExploreWClass') {
+      return windowInfo
+    }
+
+    if (
+      typeof windowInfo.hwnd !== 'number' ||
+      !Number.isFinite(windowInfo.hwnd) ||
+      windowInfo.hwnd <= 0
+    ) {
+      return windowInfo
+    }
+
+    try {
+      const folderUrl = WindowManager.getExplorerFolderPath(windowInfo.hwnd)
+      if (!folderUrl) {
+        return windowInfo
+      }
+
+      return {
+        ...windowInfo,
+        url: folderUrl,
+        path: decodeFileUrlToPath(folderUrl)
+      }
+    } catch (error) {
+      console.error('[SuperPanel] Explorer 当前目录读取异常:', error)
+      return windowInfo
+    }
+  }
+
   /**
    * 启动鼠标监听
    */
@@ -176,19 +215,13 @@ class SuperPanelManager {
   // 当前剪贴板内容（在模拟复制后读取）
   private currentClipboardContent: ClipboardContent | null = null
   // 触发时的完整窗口信息
-  private currentWindowInfo: {
-    app: string
-    bundleId?: string
-    pid?: number
-    title?: string
+  private currentWindowInfo: (FileLocationWindowInfo & {
     x?: number
     y?: number
     width?: number
     height?: number
     appPath?: string
-    className?: string
-    hwnd?: number
-  } | null = null
+  }) | null = null
 
   /**
    * 将剪贴板管理器返回的数据转换为超级面板使用的结构
@@ -228,13 +261,16 @@ class SuperPanelManager {
       const cachedWindow = clipboardManager.getCurrentWindow()
       const activeWindow = WindowManager.getActiveWindow()
       const windowInfo = activeWindow ? { ...cachedWindow, ...activeWindow } : cachedWindow
-      this.currentWindowInfo = windowInfo ?? null
+      this.currentWindowInfo = this.enrichFileLocationWindowInfo(windowInfo ?? null)
 
       // 1.6. 检查当前窗口是否被屏蔽
       const windowToCheck = activeWindow || cachedWindow
-      if (windowToCheck && this.isWindowBlocked(windowToCheck)) {
-        console.log('[SuperPanel] 当前窗口被屏蔽，跳过触发:', windowToCheck.app)
-        return { shouldBlock: false }
+      if (windowToCheck?.app) {
+        const blockedWindow = { ...windowToCheck, app: windowToCheck.app }
+        if (this.isWindowBlocked(blockedWindow)) {
+          console.log('[SuperPanel] 当前窗口被屏蔽，跳过触发:', blockedWindow.app)
+          return { shouldBlock: false }
+        }
       }
 
       // 异步部分：模拟复制、读取剪贴板、显示面板
@@ -808,10 +844,81 @@ class SuperPanelManager {
       }
     })
 
+    // 超级面板文件位置快捷跳转
+    ipcMain.handle('super-panel:get-file-location-windows', async () => {
+      if (process.platform !== 'win32' && process.platform !== 'darwin') {
+        return []
+      }
+
+      try {
+        const windows = WindowManager.getAllExplorerWindows()
+        console.log('[SuperPanel] 获取文件位置窗口成功:', {
+          platform: process.platform,
+          count: windows.length
+        })
+        return windows
+      } catch (error) {
+        console.error('[SuperPanel] 获取文件位置窗口失败:', error)
+        return []
+      }
+    })
+
+    ipcMain.handle('super-panel:is-file-location-window', async (_event, hwnd: number) => {
+      if (process.platform !== 'win32' || typeof hwnd !== 'number' || !Number.isFinite(hwnd) || hwnd <= 0) {
+        return { supported: false, isFileLocation: false }
+      }
+
+      try {
+        return {
+          supported: true,
+          isFileLocation: WindowManager.isFileLocationWindow(hwnd)
+        }
+      } catch (error) {
+        console.error('[SuperPanel] 判断文件位置窗口失败:', error)
+        return { supported: false, isFileLocation: false }
+      }
+    })
+
+    ipcMain.handle(
+      'super-panel:set-file-location-address-bar',
+      async (
+        _event,
+        target: number | string | FileLocationWindowInfo,
+        address: string
+      ) => {
+        if ((process.platform !== 'win32' && process.platform !== 'darwin') || !target || !address) {
+          return false
+        }
+
+        try {
+          const success = WindowManager.setAddressBar(target, address)
+          console.log('[SuperPanel] 设置文件位置地址栏结果:', {
+            platform: process.platform,
+            target,
+            address,
+            success
+          })
+          return success
+        } catch (error) {
+          console.error('[SuperPanel] 设置文件位置地址栏失败:', error)
+          return false
+        }
+      }
+    )
+
     // 超级面板请求窗口匹配搜索 → 转发给主渲染进程
     ipcMain.handle(
       'super-panel:search-window-commands',
-      (_event, windowInfo: { app?: string; title?: string }) => {
+      (_event, windowInfo: {
+        app?: string
+        title?: string
+        className?: string
+        hwnd?: number
+        bundleId?: string
+        pid?: number
+        path?: string
+        url?: string
+      }) => {
         // 设置触发前的窗口信息到主窗口管理器
         if (this.currentWindowInfo) {
           windowManager.setPreviousActiveWindow(this.currentWindowInfo)
@@ -820,14 +927,25 @@ class SuperPanelManager {
           this.sendToSuperPanel('super-panel-window-commands-data', { results: [] })
           return
         }
-        this.mainWindow.webContents.send('super-panel-search-window-commands', windowInfo)
+        const requestId = ++this.windowCommandRequestId
+        this.activeWindowCommandRequestId = requestId
+        this.mainWindow.webContents.send('super-panel-search-window-commands', {
+          requestId,
+          windowInfo
+        })
       }
     )
 
     // 主渲染进程返回窗口匹配结果 → 转发到超级面板
-    ipcMain.on('super-panel-window-commands-result', (_event, data: { results: any[] }) => {
-      this.sendToSuperPanel('super-panel-window-commands-data', data)
-    })
+    ipcMain.on(
+      'super-panel-window-commands-result',
+      (_event, data: { requestId?: number; results: any[] }) => {
+        if (data.requestId !== this.activeWindowCommandRequestId) {
+          return
+        }
+        this.sendToSuperPanel('super-panel-window-commands-data', data)
+      }
+    )
   }
 }
 

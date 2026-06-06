@@ -26,6 +26,24 @@ interface UwpAppInfo {
   installLocation: string
 }
 
+export interface FileLocationWindowInfo {
+  platform?: 'win32' | 'darwin'
+  kind?: 'windows-explorer' | 'windows-file-dialog' | 'mac-finder' | 'mac-file-dialog'
+  preciseTarget?: boolean
+  hwnd?: number
+  windowId?: number
+  finderId?: number
+  pid?: number
+  bundleId?: string
+  app?: string
+  title?: string
+  className?: string
+  axRole?: string
+  axSubrole?: string
+  path?: string
+  url?: string
+}
+
 interface NativeAddon {
   startMonitor: (callback: () => void) => void
   stopMonitor: () => void
@@ -60,6 +78,12 @@ interface NativeAddon {
   unicodeType: (segment: string) => boolean
   /** Windows: 通过 COM IShellWindows 查询指定窗口句柄对应的 Explorer 文件夹路径 */
   getExplorerFolderPath: (hwnd: number) => string | null
+  /** Windows/macOS: 获取文件管理器窗口 */
+  getAllExplorerWindows: () => Array<FileLocationWindowInfo | string>
+  /** Windows/macOS: 设置文件管理器或文件选择对话框地址栏路径 */
+  setAddressBar: (identifier: number | string | FileLocationWindowInfo, address: string) => boolean
+  /** Windows: 判断窗口是否是可安全修改地址栏的文件定位窗口 */
+  isFileLocationWindow?: (hwnd: number) => boolean
   /** Windows: 读取指定浏览器窗口的当前 URL，结果通过 callback 返回 */
   readBrowserWindowUrl: (
     browserName: string,
@@ -82,6 +106,9 @@ interface NativeAddon {
 
 interface WindowInfo {
   app: string // 应用名称（如 "Finder.app"）
+  platform?: 'win32' | 'darwin'
+  kind?: FileLocationWindowInfo['kind']
+  preciseTarget?: boolean
   bundleId?: string // macOS 独有
   pid?: number // 进程ID (macOS 和 Windows 都有)
   title?: string // 窗口标题
@@ -92,6 +119,12 @@ interface WindowInfo {
   appPath?: string // 应用路径
   className?: string // Windows 窗口类名（用于区分 CabinetWClass/Progman/WorkerW 等）
   hwnd?: number // Windows 窗口句柄（用于 COM 查询 Explorer 路径）
+  windowId?: number
+  finderId?: number
+  axRole?: string
+  axSubrole?: string
+  path?: string
+  url?: string
 }
 
 interface ActiveWindowResult {
@@ -433,6 +466,69 @@ export class WindowManager {
       throw new Error('getExplorerFolderPath is only available on Windows')
     }
     return (addon as NativeAddon).getExplorerFolderPath(hwnd)
+  }
+
+  /**
+   * Windows/macOS: 获取所有文件管理器窗口
+   * @returns 文件管理器窗口列表
+   */
+  static getAllExplorerWindows(): Array<FileLocationWindowInfo | string> {
+    if (platform !== 'win32' && platform !== 'darwin') {
+      throw new Error('getAllExplorerWindows is only available on Windows and macOS')
+    }
+    return (addon as NativeAddon).getAllExplorerWindows()
+  }
+
+  static isFileLocationWindow(hwnd: number): boolean {
+    if (platform !== 'win32') {
+      throw new Error('isFileLocationWindow is only available on Windows')
+    }
+    if (typeof hwnd !== 'number' || !Number.isFinite(hwnd) || hwnd <= 0) {
+      throw new TypeError('hwnd must be a positive number')
+    }
+    return Boolean((addon as NativeAddon).isFileLocationWindow?.(hwnd))
+  }
+
+  /**
+   * Windows/macOS: 设置文件管理器或文件选择对话框地址栏路径
+   * @param target 目标窗口标识或窗口信息
+   * @param address 要跳转的路径或地址
+   * @returns 是否设置成功
+   */
+  static setAddressBar(
+    target: number | string | FileLocationWindowInfo,
+    address: string
+  ): boolean {
+    if (platform !== 'win32' && platform !== 'darwin') {
+      throw new Error('setAddressBar is only available on Windows and macOS')
+    }
+    if (typeof address !== 'string' || address.trim() === '') {
+      throw new TypeError('address must be a non-empty string')
+    }
+
+    const identifier =
+      typeof target === 'object' && target !== null
+        ? platform === 'darwin'
+          ? target
+          : target.hwnd
+        : target
+
+    if (platform === 'win32') {
+      if (typeof identifier !== 'number' || !Number.isFinite(identifier) || identifier <= 0) {
+        throw new TypeError('target must include a valid hwnd')
+      }
+    } else if (typeof identifier === 'object' && identifier !== null) {
+      if (!identifier.preciseTarget) {
+        throw new TypeError('target must include precise macOS window identity')
+      }
+    } else if (
+      (typeof identifier !== 'number' || !Number.isFinite(identifier) || identifier <= 0) &&
+      (typeof identifier !== 'string' || identifier.trim() === '')
+    ) {
+      throw new TypeError('target must include a valid bundleId or pid')
+    }
+
+    return Boolean((addon as NativeAddon).setAddressBar(identifier, address))
   }
 
   /**

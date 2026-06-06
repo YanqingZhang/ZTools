@@ -290,7 +290,7 @@ export class PluginShellAPI {
       'FESearchHost.exe',
       'prevhost.exe'
     ]
-    if (!EXPLORER_APPS.includes(windowInfo.app)) {
+    if (!windowInfo.app || !EXPLORER_APPS.includes(windowInfo.app)) {
       console.log(
         `[PluginShell] readCurrentFolderPath: 当前窗口非 Explorer (app=${windowInfo.app})`
       )

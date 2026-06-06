@@ -65,7 +65,10 @@ class WindowManager {
   private static readonly MODIFIER_NAMES = ['Command', 'Ctrl', 'Alt', 'Option', 'Shift']
   private isQuitting = false // 是否正在退出应用
   private previousActiveWindow: {
-    app: string
+    app?: string
+    platform?: 'win32' | 'darwin'
+    kind?: 'windows-explorer' | 'windows-file-dialog' | 'mac-finder' | 'mac-file-dialog'
+    preciseTarget?: boolean
     bundleId?: string
     pid?: number
     title?: string
@@ -76,6 +79,12 @@ class WindowManager {
     appPath?: string
     className?: string
     hwnd?: number
+    windowId?: number
+    finderId?: number
+    path?: string
+    url?: string
+    axRole?: string
+    axSubrole?: string
   } | null = null // 打开应用前激活的窗口
   // private _shouldRestoreFocus = true // TODO: 是否在隐藏窗口时恢复焦点（待实现）
   private windowPositionsByDisplay: Record<number, { x: number; y: number }> = {}
@@ -690,21 +699,7 @@ class WindowManager {
     return ret
   }
 
-  public setPreviousActiveWindow(
-    windowInfo: {
-      app: string
-      bundleId?: string
-      pid?: number
-      title?: string
-      x?: number
-      y?: number
-      width?: number
-      height?: number
-      appPath?: string
-      className?: string
-      hwnd?: number
-    } | null
-  ): void {
+  public setPreviousActiveWindow(windowInfo: typeof this.previousActiveWindow): void {
     this.previousActiveWindow = windowInfo
   }
 
@@ -864,9 +859,12 @@ class WindowManager {
       this.previousActiveWindow = currentWindow
 
       // 唤醒黑名单检查：当前活动窗口在黑名单中时不弹出
-      if (this.isAppInWakeupBlacklist(currentWindow)) {
-        this.isRestoringFocus = false
-        return
+      if (currentWindow.app) {
+        const wakeupWindow = { ...currentWindow, app: currentWindow.app }
+        if (this.isAppInWakeupBlacklist(wakeupWindow)) {
+          this.isRestoringFocus = false
+          return
+        }
       }
     }
 
@@ -1032,19 +1030,7 @@ class WindowManager {
   /**
    * 获取打开窗口前激活的窗口
    */
-  public getPreviousActiveWindow(): {
-    app: string
-    bundleId?: string
-    pid?: number
-    title?: string
-    x?: number
-    y?: number
-    width?: number
-    height?: number
-    appPath?: string
-    className?: string
-    hwnd?: number
-  } | null {
+  public getPreviousActiveWindow(): typeof this.previousActiveWindow {
     return this.previousActiveWindow
   }
 
@@ -1079,21 +1065,27 @@ class WindowManager {
       return false
     }
 
+    const previousApp = this.previousActiveWindow.app
+    if (!previousApp) {
+      console.log('[Window] 前一个激活窗口缺少应用标识')
+      return false
+    }
+
     // 忽略同类启动器工具，避免激活冲突
     const ignoredApps = ['uTools', 'Alfred', 'Raycast', 'Wox', 'Listary']
-    if (ignoredApps.includes(this.previousActiveWindow.app)) {
-      console.log(`跳过恢复同类工具: ${this.previousActiveWindow.app}`)
+    if (ignoredApps.includes(previousApp)) {
+      console.log(`跳过恢复同类工具: ${previousApp}`)
       return false
     }
 
     try {
       const success = clipboardManager.activateApp(this.previousActiveWindow)
       if (success) {
-        console.log(`已恢复激活窗口: ${this.previousActiveWindow.app}`)
+        console.log(`已恢复激活窗口: ${previousApp}`)
         return true
       } else {
         // 静默失败，不报错（可能进程已关闭或窗口已销毁）
-        console.log(`无法恢复窗口: ${this.previousActiveWindow.app}`)
+        console.log(`无法恢复窗口: ${previousApp}`)
         return false
       }
     } catch (error) {

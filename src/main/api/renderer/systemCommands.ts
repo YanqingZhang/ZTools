@@ -736,23 +736,25 @@ function handleAddToWakeupBlacklist(ctx: SystemCommandContext): any {
   const blacklist: Array<{ app: string; bundleId?: string; label?: string }> =
     settings.wakeupBlacklist ?? []
 
+  const appName = winInfo.app
+
   // 去重：macOS 按 bundleId，Windows 按 app 名称
   const isDuplicate =
     process.platform === 'darwin' && winInfo.bundleId
       ? blacklist.some((item) => item.bundleId === winInfo.bundleId)
-      : blacklist.some((item) => item.app.toLowerCase() === winInfo.app.toLowerCase())
+      : blacklist.some((item) => item.app.toLowerCase() === appName.toLowerCase())
 
   if (isDuplicate) {
     ctx.mainWindow?.hide()
     if (Notification.isSupported()) {
-      new Notification({ title: 'ZTools', body: `${winInfo.app} 已在唤醒黑名单中` }).show()
+      new Notification({ title: 'ZTools', body: `${appName} 已在唤醒黑名单中` }).show()
     }
     return { success: false, error: '该应用已在唤醒黑名单中' }
   }
 
-  const label = winInfo.app.replace(/\.(exe|app)$/i, '')
+  const label = appName.replace(/\.(exe|app)$/i, '')
   blacklist.push({
-    app: winInfo.app,
+    app: appName,
     bundleId: winInfo.bundleId,
     label
   })
