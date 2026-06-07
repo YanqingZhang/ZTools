@@ -50,6 +50,8 @@ export interface Command {
   pinyinAbbr?: string
   featureCode?: string
   pluginExplain?: string
+  pluginName?: string
+  pluginTitle?: string
   cmdType?: CommandCmdType
   matchCmd?: MatchCmd
 }
@@ -94,7 +96,7 @@ const {
   closeMatchCommandDetail,
   toggleSelectedMatchCommandDisabled
 } = useMatchCommandDetail({
-  getPluginName: () => selectedSource.value?.name || '',
+  getPluginName: () => getCurrentSource()?.name || '',
   isDisabled: (detail) =>
     isCommandDisabled(
       detail.pluginName || '',
@@ -160,11 +162,12 @@ function buildPluginAliasDraftTarget(
   cmdName: string,
   cmdType: 'text' | 'window'
 ): ShortcutsSettingAliasDraftTarget {
-  const pluginTitle = selectedSource.value?.title || pluginName
+  const source = getCurrentSource()
+  const pluginTitle = source?.title || pluginName
   const sourceCommands = cmdType === 'window' ? regexCommands.value : commands.value
   const commandIcon = sourceCommands.find(
     (command) =>
-      command.path === selectedSource.value?.path &&
+      command.path === source?.path &&
       command.featureCode === featureCode &&
       command.name === cmdName &&
       command.cmdType === cmdType
@@ -173,7 +176,7 @@ function buildPluginAliasDraftTarget(
   return {
     commandId: getPluginCommandId(pluginName, featureCode, cmdName, cmdType),
     type: 'plugin',
-    path: selectedSource.value?.path,
+    path: source?.path,
     groupKey: pluginName,
     groupTitle: pluginTitle,
     featureCode,
@@ -182,7 +185,7 @@ function buildPluginAliasDraftTarget(
     pluginTitle,
     cmdName,
     cmdType,
-    icon: commandIcon || selectedSource.value?.logo
+    icon: commandIcon || source?.logo
   }
 }
 
@@ -317,7 +320,7 @@ async function toggleSuperPanelPin(
   } else {
     const command = commands.value.find(
       (c) =>
-        c.path === selectedSource.value?.path && c.featureCode === featureCode && c.name === cmdName
+        c.path === getCurrentSource()?.path && c.featureCode === featureCode && c.name === cmdName
     )
 
     if (command) {
@@ -371,7 +374,7 @@ async function loadSearchPinned(): Promise<void> {
 
 function isPinnedToSearch(featureCode: string): boolean {
   return searchPinned.value.some(
-    (item) => item.path === selectedSource.value?.path && item.featureCode === featureCode
+    (item) => item.path === getCurrentSource()?.path && item.featureCode === featureCode
   )
 }
 
@@ -387,11 +390,11 @@ async function toggleSearchPin(
   const pinned = isPinnedToSearch(featureCode)
 
   if (pinned) {
-    await window.ztools.internal.unpinApp(selectedSource.value?.path || '', featureCode, cmdName)
+    await window.ztools.internal.unpinApp(getCurrentSource()?.path || '', featureCode, cmdName)
   } else {
     const command = commands.value.find(
       (c) =>
-        c.path === selectedSource.value?.path && c.featureCode === featureCode && c.name === cmdName
+        c.path === getCurrentSource()?.path && c.featureCode === featureCode && c.name === cmdName
     )
 
     if (command) {
@@ -588,7 +591,7 @@ async function handleMenuSelect(
   } else if (key === 'pin-search') {
     await toggleSearchPin(pluginName, featureCode, cmdName)
   } else if (key === 'set-global-shortcut') {
-    const pluginTitle = selectedSource.value?.title || pluginName
+    const pluginTitle = getCurrentSource()?.title || pluginName
     jumpFunctionShortcutsSetting({
       payload: `${pluginTitle}/${cmdName}`
     })
@@ -604,7 +607,7 @@ async function handleMatchMenuSelect(key: string, feature: any, cmd: any): Promi
     return
   }
 
-  await handleMenuSelect(key, selectedSource.value?.name || '', feature.code, cmd.name, cmd.type)
+  await handleMenuSelect(key, getCurrentSource()?.name || '', feature.code, cmd.name, cmd.type)
 }
 
 async function openCommand(
@@ -616,7 +619,7 @@ async function openCommand(
   try {
     const command = commands.value.find(
       (c) =>
-        c.path === selectedSource.value?.path &&
+        c.path === getCurrentSource()?.path &&
         c.featureCode === featureCode &&
         c.name === cmdName &&
         c.cmdType === cmdType
@@ -653,12 +656,12 @@ function isInternalPlugin(pluginName: string): boolean {
 
 // 内置插件列表
 const internalPlugins = computed(() => {
-  return plugins.value.filter((p) => isInternalPlugin(p.name))
+  return plugins.value.filter((p) => isInternalPlugin(p.name) && pluginMatchesQuery(p))
 })
 
 // 第三方插件列表
 const thirdPartyPlugins = computed(() => {
-  return plugins.value.filter((p) => !isInternalPlugin(p.name))
+  return plugins.value.filter((p) => !isInternalPlugin(p.name) && pluginMatchesQuery(p))
 })
 
 // 所有指令
@@ -667,52 +670,132 @@ const allRegexCommands = computed(() => regexCommands.value)
 
 // 统计
 const appCount = computed(
-  () => allCommands.value.filter((c) => c.type === 'direct' && c.subType === 'app').length
+  () => getFilteredSystemCommandsForSource({ subType: 'app', name: '系统应用' }).length
 )
 
 const settingCount = computed(
-  () =>
-    allCommands.value.filter((c) => c.type === 'direct' && c.subType === 'system-setting').length
+  () => getFilteredSystemCommandsForSource({ subType: 'system-setting', name: '系统设置' }).length
 )
 
 const localShortcutCount = computed(
-  () =>
-    allCommands.value.filter((c) => c.type === 'direct' && c.subType === 'local-shortcut').length
+  () => getFilteredSystemCommandsForSource({ subType: 'local-shortcut', name: '本地启动' }).length
 )
+
+const { value: searchQuery } = useZtoolsSubInput('', '搜索指令...')
+const normalizedSearchQuery = computed(() => (searchQuery.value || '').trim().toLowerCase())
+const isSearching = computed(() => normalizedSearchQuery.value.length > 0)
+
+function includesQuery(value: unknown, query = normalizedSearchQuery.value): boolean {
+  if (!query) return true
+  return String(value || '')
+    .toLowerCase()
+    .includes(query)
+}
+
+function anyIncludesQuery(values: unknown[], query = normalizedSearchQuery.value): boolean {
+  if (!query) return true
+  return values.some((value) => includesQuery(value, query))
+}
+
+function systemSourceCommands(source: Source): Command[] {
+  if (source.subType === 'app') {
+    return allCommands.value.filter((c) => c.type === 'direct' && c.subType === 'app')
+  }
+  if (source.subType === 'system-setting') {
+    return allCommands.value
+      .filter((c) => c.type === 'direct' && c.subType === 'system-setting')
+      .map((cmd) => ({
+        ...cmd,
+        icon: cmd.icon || settingsFillIcon
+      }))
+  }
+  if (source.subType === 'local-shortcut') {
+    return allCommands.value.filter((c) => c.type === 'direct' && c.subType === 'local-shortcut')
+  }
+  return []
+}
+
+function getFilteredSystemCommandsForSource(source: Source): Command[] {
+  return weightedSearch(systemSourceCommands(source), searchQuery.value || '', [
+    { value: (c) => c.name || '', weight: 10 },
+    { value: (c) => c.path || '', weight: 3 }
+  ])
+}
+
+function commandMatchesQuery(command: Command, plugin?: any): boolean {
+  return anyIncludesQuery([
+    command.name,
+    command.path,
+    command.featureCode,
+    command.pluginExplain,
+    command.pluginName,
+    command.pluginTitle,
+    command.matchCmd?.type,
+    command.matchCmd?.label,
+    command.matchCmd?.match,
+    plugin?.name,
+    plugin?.title,
+    plugin?.description
+  ])
+}
+
+function pluginMatchesQuery(plugin: any): boolean {
+  if (!isSearching.value) return true
+
+  return (
+    anyIncludesQuery([plugin.name, plugin.title, plugin.description]) ||
+    allCommands.value.some(
+      (command) =>
+        command.type === 'plugin' &&
+        command.path === plugin.path &&
+        commandMatchesQuery(command, plugin)
+    ) ||
+    allRegexCommands.value.some(
+      (command) => command.path === plugin.path && commandMatchesQuery(command, plugin)
+    )
+  )
+}
+
+function sourceHasSearchResults(source: Source): boolean {
+  if (!isSearching.value) return true
+  if (source.subType) {
+    return getFilteredSystemCommandsForSource(source).length > 0
+  }
+  return pluginMatchesQuery(source)
+}
+
+const visibleSources = computed<Source[]>(() => {
+  const sources: Source[] = []
+  if (appCount.value > 0) sources.push({ subType: 'app', name: '系统应用' })
+  if (settingCount.value > 0) sources.push({ subType: 'system-setting', name: '系统设置' })
+  if (localShortcutCount.value > 0) sources.push({ subType: 'local-shortcut', name: '本地启动' })
+  sources.push(...internalPlugins.value, ...thirdPartyPlugins.value)
+  return sources
+})
+
+const activeSource = computed<Source | null>(() => {
+  if (!isSearching.value) return selectedSource.value
+  if (selectedSource.value && sourceHasSearchResults(selectedSource.value)) {
+    return selectedSource.value
+  }
+  return visibleSources.value[0] || null
+})
+
+function getCurrentSource(): Source | null {
+  return activeSource.value || selectedSource.value
+}
 
 // 当前选中来源的指令（系统应用/设置/本地启动）
 const systemCommands = computed(() => {
-  if (!selectedSource.value) return []
-
-  const source = selectedSource.value
-
-  let filteredCommands: Command[] = []
-
-  if (source.subType === 'app') {
-    filteredCommands = allCommands.value.filter((c) => c.type === 'direct' && c.subType === 'app')
-  } else if (source.subType === 'system-setting') {
-    filteredCommands = allCommands.value.filter(
-      (c) => c.type === 'direct' && c.subType === 'system-setting'
-    )
-    // 为系统设置添加统一图标
-    filteredCommands = filteredCommands.map((cmd) => ({
-      ...cmd,
-      icon: cmd.icon || settingsFillIcon
-    }))
-  } else if (source.subType === 'local-shortcut') {
-    filteredCommands = allCommands.value.filter(
-      (c) => c.type === 'direct' && c.subType === 'local-shortcut'
-    )
-  }
-
-  return filteredCommands
+  if (!activeSource.value) return []
+  return systemSourceCommands(activeSource.value)
 })
 
 // 按 feature 分组的插件功能
 const groupedFeatures = computed(() => {
-  if (!selectedSource.value || !selectedSource.value.path) return []
+  if (!activeSource.value || !activeSource.value.path) return []
 
-  const source = selectedSource.value
+  const source = activeSource.value
   const featureMap = new Map<string, Feature>()
 
   // 收集功能指令
@@ -767,8 +850,6 @@ const groupedFeatures = computed(() => {
   return Array.from(featureMap.values())
 })
 
-const { value: searchQuery } = useZtoolsSubInput('', '搜索指令...')
-
 const filteredSystemCommands = computed(() =>
   weightedSearch(systemCommands.value, searchQuery.value || '', [
     { value: (c) => c.name || '', weight: 10 },
@@ -781,11 +862,18 @@ const filteredGroupedFeatures = computed(() => {
   const query = (searchQuery.value || '').trim().toLowerCase()
   if (!query) return groupedFeatures.value
   return groupedFeatures.value
-    .map((feature) => ({
-      ...feature,
-      textCmds: feature.textCmds.filter((cmd) => (cmd.name || '').toLowerCase().includes(query)),
-      matchCmds: feature.matchCmds.filter((cmd) => (cmd.name || '').toLowerCase().includes(query))
-    }))
+    .map((feature) => {
+      const featureMatched = anyIncludesQuery([feature.code, feature.name, feature.explain], query)
+      if (featureMatched) return feature
+
+      return {
+        ...feature,
+        textCmds: feature.textCmds.filter((cmd) => anyIncludesQuery([cmd.name], query)),
+        matchCmds: feature.matchCmds.filter((cmd) =>
+          anyIncludesQuery([cmd.name, cmd.type, cmd.match?.type, cmd.match?.match], query)
+        )
+      }
+    })
     .filter((f) => f.textCmds.length > 0 || f.matchCmds.length > 0)
 })
 
@@ -795,9 +883,9 @@ const hasCommands = computed(
 
 const textFeaturesCount = computed(() => {
   if (
-    selectedSource.value?.subType === 'app' ||
-    selectedSource.value?.subType === 'system-setting' ||
-    selectedSource.value?.subType === 'local-shortcut'
+    activeSource.value?.subType === 'app' ||
+    activeSource.value?.subType === 'system-setting' ||
+    activeSource.value?.subType === 'local-shortcut'
   ) {
     return filteredSystemCommands.value.length
   }
@@ -849,8 +937,6 @@ async function loadCommands(): Promise<void> {
 function selectSource(source: Source): void {
   selectedSource.value = source
   activeTab.value = 'text'
-  // 切换来源时清空搜索框
-  window.ztools.setSubInputValue('')
 }
 
 // 初始化
@@ -891,7 +977,8 @@ onMounted(async () => {
 
         <!-- 系统应用 -->
         <div
-          :class="['source-item', { active: selectedSource?.subType === 'app' }]"
+          v-if="appCount > 0"
+          :class="['source-item', { active: activeSource?.subType === 'app' }]"
           @click="selectSource({ subType: 'app', name: '系统应用' })"
         >
           <div class="i-z-monitor source-icon source-svg-icon font-size-18px" />
@@ -902,7 +989,7 @@ onMounted(async () => {
         <!-- 系统设置 -->
         <div
           v-if="settingCount > 0"
-          :class="['source-item', { active: selectedSource?.subType === 'system-setting' }]"
+          :class="['source-item', { active: activeSource?.subType === 'system-setting' }]"
           @click="selectSource({ subType: 'system-setting', name: '系统设置' })"
         >
           <div class="i-z-settings source-icon source-svg-icon font-size-18px" />
@@ -913,7 +1000,7 @@ onMounted(async () => {
         <!-- 本地启动 -->
         <div
           v-if="localShortcutCount > 0"
-          :class="['source-item', { active: selectedSource?.subType === 'local-shortcut' }]"
+          :class="['source-item', { active: activeSource?.subType === 'local-shortcut' }]"
           @click="selectSource({ subType: 'local-shortcut', name: '本地启动' })"
         >
           <div class="i-z-folder source-icon source-svg-icon font-size-18px" />
@@ -925,7 +1012,7 @@ onMounted(async () => {
         <div
           v-for="plugin in internalPlugins"
           :key="plugin.path"
-          :class="['source-item', { active: selectedSource?.path === plugin.path }]"
+          :class="['source-item', { active: activeSource?.path === plugin.path }]"
           @click="selectSource(plugin)"
         >
           <AdaptiveIcon
@@ -934,7 +1021,7 @@ onMounted(async () => {
             class="source-icon plugin-icon"
             draggable="false"
           />
-          <span v-else class="source-icon">🧩</span>
+          <div v-else class="i-z-plugin source-icon source-svg-icon" />
           <span class="source-name">{{ plugin.title }}</span>
           <span class="source-badge">{{ getPluginCommandCount(plugin) }}</span>
         </div>
@@ -948,7 +1035,7 @@ onMounted(async () => {
         <div
           v-for="plugin in thirdPartyPlugins"
           :key="plugin.path"
-          :class="['source-item', { active: selectedSource?.path === plugin.path }]"
+          :class="['source-item', { active: activeSource?.path === plugin.path }]"
           @click="selectSource(plugin)"
         >
           <AdaptiveIcon
@@ -957,7 +1044,7 @@ onMounted(async () => {
             class="source-icon plugin-icon"
             draggable="false"
           />
-          <span v-else class="source-icon">🧩</span>
+          <div v-else class="i-z-plugin source-icon source-svg-icon" />
           <span class="source-name">{{ plugin.title || plugin.name }}</span>
           <span class="source-badge">{{ getPluginCommandCount(plugin) }}</span>
         </div>
@@ -990,24 +1077,24 @@ onMounted(async () => {
       <!-- 指令列表 -->
       <div class="commands-content">
         <!-- 未选择来源 -->
-        <div v-if="!selectedSource" class="empty-state">
-          <span class="empty-icon">📋</span>
-          <p>从左侧选择一个来源查看指令</p>
+        <div v-if="!activeSource" class="empty-state">
+          <div class="i-z-search empty-icon" />
+          <p>{{ isSearching ? '暂无匹配指令' : '从左侧选择一个来源查看指令' }}</p>
         </div>
 
         <!-- 功能指令 Tab -->
         <div v-else-if="activeTab === 'text'" class="command-list">
           <div v-if="textFeaturesCount === 0" class="empty-state">
-            <span class="empty-icon">🔍</span>
+            <div class="i-z-search empty-icon" />
             <p>暂无功能指令</p>
           </div>
 
           <!-- 系统应用/设置/本地启动：单个显示 -->
           <template
             v-if="
-              selectedSource?.subType === 'app' ||
-              selectedSource?.subType === 'system-setting' ||
-              selectedSource?.subType === 'local-shortcut'
+              activeSource?.subType === 'app' ||
+              activeSource?.subType === 'system-setting' ||
+              activeSource?.subType === 'local-shortcut'
             "
           >
             <CommandCard v-for="(cmd, index) in filteredSystemCommands" :key="index" :command="cmd">
@@ -1036,9 +1123,9 @@ onMounted(async () => {
                 <TagDropdown
                   :menu-items="
                     getMenuItems(
-                      isCommandDisabled(selectedSource?.name || '', feature.code, cmd.name, 'text'),
+                      isCommandDisabled(activeSource?.name || '', feature.code, cmd.name, 'text'),
                       'text',
-                      selectedSource?.name || '',
+                      activeSource?.name || '',
                       feature.code,
                       cmd.name
                     )
@@ -1047,7 +1134,7 @@ onMounted(async () => {
                     (key) =>
                       handleMenuSelect(
                         key,
-                        selectedSource?.name || '',
+                        activeSource?.name || '',
                         feature.code,
                         cmd.name,
                         'text'
@@ -1057,7 +1144,7 @@ onMounted(async () => {
                   <CommandTag
                     :command="cmd"
                     :disabled="
-                      isCommandDisabled(selectedSource?.name || '', feature.code, cmd.name, 'text')
+                      isCommandDisabled(activeSource?.name || '', feature.code, cmd.name, 'text')
                     "
                     show-arrow
                   />
@@ -1070,7 +1157,7 @@ onMounted(async () => {
         <!-- 匹配指令 Tab -->
         <div v-else-if="activeTab === 'match'" class="command-list">
           <div v-if="matchFeaturesCount === 0" class="empty-state">
-            <span class="empty-icon">🔍</span>
+            <div class="i-z-search empty-icon" />
             <p>暂无匹配指令</p>
           </div>
 
@@ -1086,9 +1173,9 @@ onMounted(async () => {
               :key="idx"
               :menu-items="
                 getMenuItems(
-                  isCommandDisabled(selectedSource?.name || '', feature.code, cmd.name, cmd.type),
+                  isCommandDisabled(activeSource?.name || '', feature.code, cmd.name, cmd.type),
                   cmd.type,
-                  selectedSource?.name || '',
+                  activeSource?.name || '',
                   feature.code,
                   cmd.name
                 )
@@ -1098,7 +1185,7 @@ onMounted(async () => {
               <CommandTag
                 :command="cmd"
                 :disabled="
-                  isCommandDisabled(selectedSource?.name || '', feature.code, cmd.name, cmd.type)
+                  isCommandDisabled(activeSource?.name || '', feature.code, cmd.name, cmd.type)
                 "
                 show-arrow
               />
@@ -1641,9 +1728,12 @@ onMounted(async () => {
 }
 
 .empty-icon {
-  font-size: 48px;
+  width: 56px;
+  height: 56px;
+  font-size: 56px;
   margin-bottom: 16px;
   opacity: 0.5;
+  color: var(--text-secondary);
 }
 
 .empty-state p {
