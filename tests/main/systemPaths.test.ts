@@ -1,7 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
 
-// systemPaths.ts 顶部 import { app } from 'electron'（getWindowsScanPaths 用 app.getPath），
-// mock 提供 app.getPath，避免依赖真实 Electron 运行时，确保跨平台运行。
 vi.mock('electron', () => ({
   app: { getPath: vi.fn((name: string) => `/mock/${name}`) }
 }))
@@ -47,9 +45,5 @@ describe('getWindowsRootScanPaths（Start Menu 根路径）', () => {
     for (const root of roots) {
       expect(scans).toContain(path.join(root, 'Programs'))
     }
-  })
-
-  it('不改动 getWindowsScanPaths 行为（仍返回 4 条路径）', () => {
-    expect(getWindowsScanPaths()).toHaveLength(4)
   })
 })

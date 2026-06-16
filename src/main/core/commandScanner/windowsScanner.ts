@@ -204,11 +204,8 @@ export async function parseUrlFile(filePath: string): Promise<UrlFileInfo | null
 }
 
 /**
- * 处理单个快捷方式文件 entry（.url / .lnk）：解析、本地化名查找、`_dedupeTarget` 填充、
- * `SKIP_NAME_PATTERN` 过滤、push。递归扫描与扁平扫描共享此逐文件处理逻辑，
- * 唯一区别是调用方是否对子目录下钻（见 scanDirectory / scanDirectoryFlat）。
- *
- * 注意：本函数仅处理「文件」entry，不处理目录；目录的递归 / 跳过由调用方决定。
+ * 处理单个快捷方式 entry（.url / .lnk）：解析、过滤、入列。
+ * 递归与扁平扫描共用，仅处理文件 entry；目录的下钻 / 跳过由调用方决定。
  */
 async function processShortcutEntry(
   dirPath: string,
@@ -325,8 +322,12 @@ async function scanDirectory(
         continue
       }
 
-      // 处理文件（共享逐文件逻辑）
-      await processShortcutEntry(dirPath, entry, apps, displayNameMap)
+      try {
+        await processShortcutEntry(dirPath, entry, apps, displayNameMap)
+      } catch (error) {
+        // 单个文件失败不影响目录内其余扫描
+        console.error(`[Scanner] 处理快捷方式失败 ${path.join(dirPath, entry.name)}:`, error)
+      }
     }
   } catch (error) {
     console.error(`[Scanner] 扫描目录失败 ${dirPath}:`, error)
@@ -334,13 +335,8 @@ async function scanDirectory(
 }
 
 /**
- * 扁平扫描目录中的快捷方式（Start Menu 根专用）。
- *
- * 仅处理本层 entries（根级直接文件），**不下钻子目录**。
- * 这是本变更的核心不变式：Start Menu 根的 `Programs` 子树已由 `scanDirectory`
- * 递归覆盖，此处若下钻会造成重复扫描与重复索引。
- *
- * 导出便于单元测试（与 `shouldSkipShortcut` 等风格一致）。
+ * 扁平扫描（Start Menu 根专用）
+ * 仅处理本层文件，不下钻 Programs 子目录，避免重复索引
  */
 export async function scanDirectoryFlat(
   dirPath: string,
@@ -351,10 +347,14 @@ export async function scanDirectoryFlat(
     const entries = await fsPromises.readdir(dirPath, { withFileTypes: true })
 
     for (const entry of entries) {
-      // 扁平扫描：跳过子目录，仅处理本层文件
       if (entry.isDirectory()) continue
 
-      await processShortcutEntry(dirPath, entry, apps, displayNameMap)
+      try {
+        await processShortcutEntry(dirPath, entry, apps, displayNameMap)
+      } catch (error) {
+        // 单个文件失败不影响目录内其余扫描
+        console.error(`[Scanner] 处理快捷方式失败 ${path.join(dirPath, entry.name)}:`, error)
+      }
     }
   } catch (error) {
     console.error(`[Scanner] 扫描目录失败 ${dirPath}:`, error)
@@ -387,21 +387,19 @@ export async function scanApplications(): Promise<Command[]> {
 
     const apps: Command[] = []
 
-    // 获取 Windows 扫描路径（开始菜单 Programs 子树 + 桌面，递归）
+    // 获取 Windows 扫描路径（开始菜单 + 桌面）
     const scanPaths = getWindowsScanPaths()
-    // 获取 Windows Start Menu 根扫描路径（用户级 / 系统级，扁平、不下钻 Programs）
+    // 获取 Start Menu 根路径
     const rootScanPaths = getWindowsRootScanPaths()
 
     // 获取本地化显示名称（解决 Windows 系统快捷方式文件名为英文的问题）
-    // 注：Start Menu 根 desktop.ini 无 [LocalizedFileNames] 条目（见 design Decision 2），
-    // 根级 .lnk 经 displayNameMap 降级为磁盘文件名，故本地化解析仍以 Programs 子树为准。
     const displayNameMap = await getLocalizedDisplayNames(scanPaths)
 
-    // 扫描所有目录：Programs 子树 + 桌面走递归扫描（行为不变）
+    // 递归扫描 Programs + 桌面
     for (const menuPath of scanPaths) {
       await scanDirectory(menuPath, apps, displayNameMap)
     }
-    // Start Menu 根走扁平扫描（仅根级直接文件，不下钻 Programs，避免与递归扫描重复）
+    // 扁平扫描 Start Menu 根
     for (const rootPath of rootScanPaths) {
       await scanDirectoryFlat(rootPath, apps, displayNameMap)
     }

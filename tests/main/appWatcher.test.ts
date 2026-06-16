@@ -1,10 +1,15 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
 
 // chokidar 的 mock watcher：记录 on 注册的回调，并提供 __emit 触发事件
+type MockWatcherApi = {
+  on: Mock
+  close: Mock
+  __emit: (event: string, ...args: unknown[]) => void
+}
 const { createMockWatcher } = vi.hoisted(() => {
-  const createMockWatcher = () => {
+  const createMockWatcher = (): MockWatcherApi => {
     const handlers: Record<string, Array<(...args: unknown[]) => void>> = {}
-    const api = {
+    const api: MockWatcherApi = {
       on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
         ;(handlers[event] ||= []).push(cb)
         return api
@@ -65,17 +70,19 @@ describe('AppWatcher 双 watcher 接线', () => {
     const [recursivePaths, recursiveOpts] = watchMock.mock.calls[0]
     const [flatPaths, flatOpts] = watchMock.mock.calls[1]
 
-    expect(recursiveOpts.depth).toBe(5)
-    expect(flatOpts.depth).toBe(0)
+    expect(recursiveOpts?.depth).toBe(5)
+    expect(flatOpts?.depth).toBe(0)
     expect(recursivePaths).toEqual(getWindowsScanPaths())
     expect(flatPaths).toEqual(getWindowsRootScanPaths())
   })
 
-  it('扁平根 watcher 不为空时才创建（覆盖 getWindowsRootScanPaths）', () => {
+  it('扁平根路径为空时（非 win32，如 darwin）不创建扁平 watcher', () => {
+    // getFlatRootWatchPaths 仅 win32 返回非空；其余平台为 []，命中 startWatching 的 length>0 守卫
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
     appWatcher.init({} as never)
     const watchMock = vi.mocked(chokidar.watch)
-    // 第二次 watch 调用的 paths 即扁平根路径
-    expect(watchMock.mock.calls[1][0]).toEqual(getWindowsRootScanPaths())
+    // 仅创建递归 watcher；扁平 watcher 因路径为空而跳过
+    expect(watchMock).toHaveBeenCalledTimes(1)
   })
 
   it('.lnk add/unlink 事件路由到防抖 notifyChange → refreshAppsCache', () => {

@@ -37,37 +37,12 @@ export function getWindowsScanPaths(): string[] {
 }
 
 /**
- * 获取 Windows 开始菜单 **根** 扫描路径（不含 `Programs` 子文件夹）。
- *
- * Windows 允许将 `.lnk` / `.url` 直接放在 `Start Menu\` 根目录下
- * （用户级与系统级均如此），这些快捷方式在开始菜单中可见。
- * 但 `getWindowsScanPaths()` 把开始菜单路径硬编码到 `...\Start Menu\Programs`，
- * 递归扫描从该子文件夹起，故根级快捷方式会被遗漏（issue #551）。
- *
- * 本函数返回两条 Start Menu 根路径，供扁平（非递归）扫描与监听使用：
- * 仅扫描根级直接文件，不下钻子目录（`Programs` 子树由 `getWindowsScanPaths` 递归覆盖）。
+ * 获取 Windows 开始菜单根路径
  */
 export function getWindowsRootScanPaths(): string[] {
-  // 系统级开始菜单根
-  const programDataStartMenuRoot = path.join(
-    'C:',
-    'ProgramData',
-    'Microsoft',
-    'Windows',
-    'Start Menu'
-  )
-
-  // 用户级开始菜单根
-  const userStartMenuRoot = path.join(
-    os.homedir(),
-    'AppData',
-    'Roaming',
-    'Microsoft',
-    'Windows',
-    'Start Menu'
-  )
-
-  return [programDataStartMenuRoot, userStartMenuRoot]
+  return getWindowsScanPaths()
+    .filter((p) => p.endsWith(`${path.sep}Programs`))
+    .map(path.dirname)
 }
 
 /**

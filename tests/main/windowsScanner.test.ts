@@ -1,7 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
 
-// mock 原生模块：避免 vite import-analysis 解析 native/index.ts 中的 .node?asset 导入
-// （windowsScanner 仅类型上依赖 MuiResolver，本文件的纯函数 / parseUrlFile 测试不触发它）
 vi.mock('../../src/main/core/native/index', () => ({
   MuiResolver: { resolve: vi.fn(() => new Map()) }
 }))
@@ -103,7 +101,6 @@ describe('deduplicateCommands', () => {
   })
 
   it('应合并 Start Menu 根级与 Programs 子树同名同目标的快捷方式', () => {
-    // issue #551 场景：根级 .lnk 与 Programs 子树 .lnk 同名同目标，应合并为单一指令
     const apps = [
       {
         name: 'App',
