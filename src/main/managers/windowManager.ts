@@ -863,8 +863,24 @@ class WindowManager {
       }
       case 'lastActive': {
         const prev = this.previousActiveWindow
-        if (prev && typeof prev.x === 'number' && typeof prev.y === 'number') {
-          const display = screen.getDisplayNearestPoint({ x: prev.x, y: prev.y })
+        if (
+          prev &&
+          typeof prev.x === 'number' &&
+          typeof prev.y === 'number' &&
+          Number.isFinite(prev.x) &&
+          Number.isFinite(prev.y)
+        ) {
+          const centerX =
+            prev.x +
+            (typeof prev.width === 'number' && Number.isFinite(prev.width)
+              ? Math.floor(prev.width / 2)
+              : 0)
+          const centerY =
+            prev.y +
+            (typeof prev.height === 'number' && Number.isFinite(prev.height)
+              ? Math.floor(prev.height / 2)
+              : 0)
+          const display = screen.getDisplayNearestPoint({ x: centerX, y: centerY })
           target = { ...display.workArea, id: display.id }
         } else {
           target = this.getDisplayAtCursor()
