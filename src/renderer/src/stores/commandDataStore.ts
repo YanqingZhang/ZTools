@@ -16,6 +16,17 @@ import {
   type CommandAliasStore
 } from '@shared/commandShared'
 import {
+  matchesFilesInput,
+  matchesOverText,
+  matchesRegexText,
+  matchesWindowInput,
+  parseMatchPattern,
+  type FilesCmdLike,
+  type OverCmdLike,
+  type RegexCmdLike,
+  type WindowCmdLike
+} from '@shared/commandContextShared'
+import {
   ENABLED_MAIN_PUSH_PLUGINS_KEY,
   isMainPushPluginEnabled,
   normalizeConfigList
@@ -1152,51 +1163,18 @@ export const useCommandDataStore = defineStore('commandData', () => {
     const regexMatches: SearchResult[] = []
     for (const cmd of regexCommands.value) {
       if (cmd.matchCmd) {
-        if (cmd.matchCmd.type === 'regex') {
-          // Regex 类型匹配
-          // 检查用户输入长度是否满足最小要求
-          if (query.length < cmd.matchCmd.minLength) {
-            continue
-          }
-
-          try {
-            // 提取正则表达式（去掉两边的斜杠和标志）
-            const regexStr = cmd.matchCmd.match.replace(/^\/|\/[gimuy]*$/g, '')
-            const regex = new RegExp(regexStr)
-
-            // 测试用户输入是否匹配
-            if (regex.test(query)) {
-              regexMatches.push(cmd)
-            }
-          } catch (error) {
-            console.error(`正则表达式 ${cmd.matchCmd.match} 解析失败:`, error)
-          }
-        } else if (cmd.matchCmd.type === 'over') {
-          // Over 类型匹配
-          const minLength = cmd.matchCmd.minLength ?? 1
-          const maxLength = cmd.matchCmd.maxLength ?? 10000
-
-          // 检查长度是否满足要求
-          if (query.length < minLength || query.length > maxLength) {
-            continue
-          }
-
-          // 检查是否被排除
-          if (cmd.matchCmd.exclude) {
-            try {
-              const excludeRegexStr = cmd.matchCmd.exclude.replace(/^\/|\/[gimuy]*$/g, '')
-              const excludeRegex = new RegExp(excludeRegexStr)
-
-              // 如果匹配到排除规则，跳过
-              if (excludeRegex.test(query)) {
-                continue
-              }
-            } catch (error) {
-              console.error(`排除正则表达式 ${cmd.matchCmd.exclude} 解析失败:`, error)
-            }
-          }
-
-          // 通过所有检查，添加到匹配结果
+        if (
+          cmd.matchCmd.type === 'regex' &&
+          matchesRegexText(query, cmd.matchCmd as RegexCmdLike, { preserveFlags: false })
+        ) {
+          regexMatches.push(cmd)
+        } else if (
+          cmd.matchCmd.type === 'over' &&
+          matchesOverText(query, cmd.matchCmd as OverCmdLike, {
+            useExclude: true,
+            preserveExcludeFlags: false
+          })
+        ) {
           regexMatches.push(cmd)
         }
       }
@@ -1235,40 +1213,14 @@ export const useCommandDataStore = defineStore('commandData', () => {
     const result = regexCommands.value.filter((cmd) => {
       // 支持 over 类型
       if (cmd.matchCmd?.type === 'over') {
-        const textLength = pastedText.length
-        const minLength = cmd.matchCmd.minLength ?? 1
-        const maxLength = cmd.matchCmd.maxLength ?? 10000
-
-        return textLength >= minLength && textLength <= maxLength
+        return matchesOverText(pastedText, cmd.matchCmd as OverCmdLike)
       }
 
       // 支持 regex 类型
       if (cmd.matchCmd?.type === 'regex') {
-        const textLength = pastedText.length
-        const minLength = cmd.matchCmd.minLength ?? 1
-
-        // 检查长度
-        if (textLength < minLength) {
-          return false
-        }
-
-        // 检查正则匹配
-        const regexStr = cmd.matchCmd.match
-        if (regexStr) {
-          try {
-            // 解析正则表达式字符串（格式：/pattern/flags）
-            const match = regexStr.match(/^\/(.+)\/([gimuy]*)$/)
-            if (match) {
-              const pattern = match[1]
-              const flags = match[2]
-              const regex = new RegExp(pattern, flags)
-              return regex.test(pastedText)
-            }
-          } catch (error) {
-            console.error('正则表达式解析失败:', regexStr, error)
-            return false
-          }
-        }
+        return matchesRegexText(pastedText, cmd.matchCmd as RegexCmdLike, {
+          preserveFlags: true
+        })
       }
 
       return false
@@ -1288,70 +1240,12 @@ export const useCommandDataStore = defineStore('commandData', () => {
 
     const filesCommandsList = regexCommands.value.filter((c) => c.matchCmd?.type === 'files')
 
-    const result = filesCommandsList.filter((cmd) => {
-      const filesCmd = cmd.matchCmd as FilesCmd
-
-      // 1. 检查文件数量是否满足要求
-      const fileCount = pastedFiles.length
-      const minLength = filesCmd.minLength ?? 1
-      const maxLength = filesCmd.maxLength ?? 10000
-
-      if (fileCount < minLength || fileCount > maxLength) {
-        return false
-      }
-
-      // 2. 检查每个文件是否满足条件
-      const allFilesMatch = pastedFiles.every((file) => {
-        // 2.1 检查文件类型（file 或 directory）
-        if (filesCmd.fileType) {
-          if (filesCmd.fileType === 'file' && file.isDirectory) {
-            return false
-          }
-          if (filesCmd.fileType === 'directory' && !file.isDirectory) {
-            return false
-          }
-        }
-
-        // 2.2 检查文件扩展名（只对文件有效，不检查文件夹）
-        if (filesCmd.extensions && !file.isDirectory) {
-          const ext = file.name.split('.').pop()?.toLowerCase()
-          const allowedExts = filesCmd.extensions.map((e) => e.toLowerCase())
-          if (!ext || !allowedExts.includes(ext)) {
-            return false
-          }
-        }
-
-        // 2.3 检查正则表达式匹配
-        if (filesCmd.match) {
-          try {
-            // 解析正则表达式字符串（格式：/pattern/flags）
-            const match = filesCmd.match.match(/^\/(.+)\/([gimuy]*)$/)
-            if (match) {
-              const pattern = match[1]
-              const flags = match[2]
-              const regex = new RegExp(pattern, flags)
-              const testResult = regex.test(file.name)
-              if (!testResult) {
-                return false
-              }
-            } else {
-              // 如果不是标准格式，直接作为字符串匹配
-              const testResult = file.name.includes(filesCmd.match)
-              if (!testResult) {
-                return false
-              }
-            }
-          } catch (error) {
-            console.error(`正则表达式 ${filesCmd.match} 解析失败:`, error)
-            return false
-          }
-        }
-
-        return true
+    const result = filesCommandsList.filter((cmd) =>
+      matchesFilesInput(pastedFiles, cmd.matchCmd as FilesCmdLike, {
+        preserveFlags: true,
+        allowPlainString: true
       })
-
-      return allFilesMatch
-    })
+    )
 
     // 应用特殊指令配置，过滤禁用指令
     return result.filter((cmd) => !isCommandDisabled(cmd)).map((cmd) => applySpecialConfig(cmd))
@@ -1359,14 +1253,20 @@ export const useCommandDataStore = defineStore('commandData', () => {
 
   const windowTitleRegexCache = new Map<string, RegExp | null>()
 
+  // 缓存窗口标题匹配使用的正则对象。
   function getCachedWindowTitleRegex(pattern: string): RegExp | null {
     if (windowTitleRegexCache.has(pattern)) {
       return windowTitleRegexCache.get(pattern) || null
     }
 
     try {
-      const titleRegexStr = pattern.replace(/^\/|\/[gimuy]*$/g, '')
-      const regex = new RegExp(titleRegexStr)
+      const regex = parseMatchPattern(pattern, {
+        preserveFlags: false,
+        allowPlainString: true
+      })
+      if (!regex) {
+        throw new Error('invalid regex pattern')
+      }
       windowTitleRegexCache.set(pattern, regex)
       return regex
     } catch (error) {
@@ -1376,6 +1276,7 @@ export const useCommandDataStore = defineStore('commandData', () => {
     }
   }
 
+  // 判断窗口命令是否匹配当前活动窗口。
   function matchesWindowCommand(
     command: Command,
     windowInfo?: { app?: string; title?: string; className?: string } | null
@@ -1389,30 +1290,14 @@ export const useCommandDataStore = defineStore('commandData', () => {
     }
 
     const windowCmd = command.matchCmd as WindowCmd
+    const titleRegex = windowCmd.match.title
+      ? getCachedWindowTitleRegex(windowCmd.match.title)
+      : null
 
-    // 检查 app 匹配
-    if (windowCmd.match.app && windowInfo.app) {
-      const appMatches = windowCmd.match.app.some((appPattern) => {
-        // 直接字符串匹配
-        return windowInfo.app === appPattern
-      })
-      const classNameMatches = windowCmd.match.className?.some(
-        (classNamePattern) => classNamePattern === (windowInfo.className || '')
-      )
-      if (appMatches && (!windowCmd.match.className || classNameMatches)) {
-        return true
-      }
-    }
-
-    // 检查 title 匹配（正则表达式）
-    if (windowCmd.match.title && windowInfo.title) {
-      const titleRegex = getCachedWindowTitleRegex(windowCmd.match.title)
-      if (titleRegex?.test(windowInfo.title)) {
-        return true
-      }
-    }
-
-    return false
+    return matchesWindowInput(windowInfo, windowCmd as WindowCmdLike, {
+      titleRegex,
+      preserveTitleFlags: false
+    })
   }
 
   // 搜索支持窗口的指令（根据当前激活窗口进行匹配）
@@ -1634,30 +1519,18 @@ export const useCommandDataStore = defineStore('commandData', () => {
             break
           }
         } else if (cmd.type === 'regex') {
-          if (query.length >= (cmd.minLength || 0)) {
-            try {
-              const regexStr = cmd.match.replace(/^\/|\/[gimuy]*$/g, '')
-              if (new RegExp(regexStr).test(query)) {
-                matched = true
-                matchedCmdType = 'regex'
-                break
-              }
-            } catch {
-              /* 忽略无效正则 */
-            }
+          if (matchesRegexText(query, cmd as RegexCmdLike, { preserveFlags: false })) {
+            matched = true
+            matchedCmdType = 'regex'
+            break
           }
         } else if (cmd.type === 'over') {
-          const minLen = cmd.minLength ?? 1
-          const maxLen = cmd.maxLength ?? 10000
-          if (query.length >= minLen && query.length <= maxLen) {
-            if (cmd.exclude) {
-              try {
-                const excludeStr = cmd.exclude.replace(/^\/|\/[gimuy]*$/g, '')
-                if (new RegExp(excludeStr).test(query)) continue
-              } catch {
-                /* 忽略 */
-              }
-            }
+          if (
+            matchesOverText(query, cmd as OverCmdLike, {
+              useExclude: true,
+              preserveExcludeFlags: false
+            })
+          ) {
             matched = true
             matchedCmdType = 'over'
             break
