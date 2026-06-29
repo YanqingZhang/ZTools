@@ -4,6 +4,7 @@ const mockDbGet = vi.hoisted(() => vi.fn())
 const mockDbPut = vi.hoisted(() => vi.fn())
 const mockClearPluginData = vi.hoisted(() => vi.fn())
 const mockFsRm = vi.hoisted(() => vi.fn())
+const mockCleanupForPlugin = vi.hoisted(() => vi.fn())
 
 vi.mock('electron', () => ({
   dialog: {
@@ -76,6 +77,12 @@ vi.mock('../../src/main/api/renderer/pluginMarket', () => ({
   PluginMarketAPI: class {}
 }))
 
+vi.mock('../../src/main/core/provider/providerManager', () => ({
+  default: {
+    cleanupForPlugin: mockCleanupForPlugin
+  }
+}))
+
 import {
   DEV_PROJECT_REGISTRY_DB_KEY,
   type DevProjectRegistry
@@ -96,7 +103,6 @@ describe('plugin removal cleanup', () => {
     mockClearPluginData.mockResolvedValue({ success: true })
     mockFsRm.mockResolvedValue(undefined)
   })
-
   it('removes all matching development entries when deleting a dev project', async () => {
     const registry: DevProjectRegistry = {
       version: 3,
@@ -301,5 +307,29 @@ describe('plugin removal cleanup', () => {
     expect(result).toEqual({ success: true })
     expect(mockDbPut).toHaveBeenCalledWith(ENABLED_MAIN_PUSH_PLUGINS_KEY, ['other', 'demo'])
     expect(send).toHaveBeenCalledWith('plugins-changed')
+  })
+
+  it('cleans provider settings for the uninstalled plugin', async () => {
+    mockDbGet.mockImplementation((key: string) => {
+      if (key === 'plugins') {
+        return [{ name: 'demo', path: 'D:\\plugins\\demo', isDevelopment: false }]
+      }
+      return []
+    })
+
+    const api = new PluginsAPI()
+    const killPlugin = vi.fn(() => false)
+    const removePluginUsageData = vi.fn()
+
+    ;(api as any).pluginManager = { killPlugin }
+    ;(api as any).devProjects = { removePluginUsageData }
+    ;(api as any).mainWindow = { webContents: { send: vi.fn() } }
+    ;(api as any).disabledPluginPathSet = new Set<string>()
+
+    const result = await api.deletePlugin('D:\\plugins\\demo')
+
+    expect(result).toEqual({ success: true })
+    // 卸载时应清理该插件在 provider 配置中的启用/默认/参数
+    expect(mockCleanupForPlugin).toHaveBeenCalledWith('demo')
   })
 })

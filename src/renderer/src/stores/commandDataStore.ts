@@ -125,6 +125,55 @@ interface SearchResultScoreMeta {
   scoreMatches: MatchInfo[]
 }
 
+/**
+ * 安全生成 { pinyin, pinyinAbbr } 字段。
+ *
+ * 插件数据中指令名（cmdName / app.name 等）可能不是字符串（例如对象型 cmd 缺 type
+ * 时 cmdName 会是整个对象），直接传入 pinyin() 会返回非字符串并让后续 .replace 崩溃，
+ * 进而让整个 loadCommands 失败、搜索栏与历史全部空白。这里统一兜底：
+ * 非字符串输入返回空串；pinyin/replace 抛错时也回退为空串，绝不向上抛。
+ */
+export function toPinyinFields(name: unknown): { pinyin: string; pinyinAbbr: string } {
+  if (typeof name !== 'string' || name === '') {
+    return { pinyin: '', pinyinAbbr: '' }
+  }
+  try {
+    const full = pinyin(name, { toneType: 'none', type: 'string' })
+      .replace(/\s+/g, '')
+      .toLowerCase()
+    const abbr = pinyin(name, { pattern: 'first', toneType: 'none', type: 'string' })
+      .replace(/\s+/g, '')
+      .toLowerCase()
+    return { pinyin: full, pinyinAbbr: abbr }
+  } catch {
+    return { pinyin: '', pinyinAbbr: '' }
+  }
+}
+
+/**
+ * 匹配型指令的白名单 type。命中则按 match cmd 处理（取 cmd.label 作名字），
+ * 否则视为文本型指令（cmd 本身即为名字）。
+ */
+const MATCH_CMD_TYPES = ['regex', 'over', 'img', 'files', 'window']
+
+/**
+ * 从一条 cmd 规整出 { isMatchCmd, cmdName }。
+ *
+ * 关键防御：当 cmd 是对象但 type 不在白名单（或缺 type）时，旧逻辑会让 cmdName =
+ * 整个对象，再传给 pinyin() 会抛 "is not assignable to type string"。这里强制把
+ * cmdName 收敛为字符串：对象型取 label（取不到回退空串），字符串型直接用。
+ */
+export function normalizeCmd(cmd: unknown): { isMatchCmd: boolean; cmdName: string } {
+  if (typeof cmd === 'object' && cmd !== null) {
+    const type = (cmd as { type?: unknown }).type
+    const isMatchCmd =
+      typeof type === 'string' && MATCH_CMD_TYPES.includes(type)
+    const label = (cmd as { label?: unknown }).label
+    return { isMatchCmd, cmdName: typeof label === 'string' ? label : '' }
+  }
+  return { isMatchCmd: false, cmdName: typeof cmd === 'string' ? cmd : '' }
+}
+
 // MainPush 功能信息
 export interface MainPushFeature {
   /** 提供该 mainPush 功能的插件路径。 */
@@ -770,6 +819,7 @@ export const useCommandDataStore = defineStore('commandData', () => {
           }
         }
 
+        const pluginNamePy = toPinyinFields(plugin.name)
         pluginItems.push({
           name: plugin.title ?? plugin.name,
           path: plugin.path,
@@ -779,16 +829,8 @@ export const useCommandDataStore = defineStore('commandData', () => {
           pluginName: plugin.name,
           pluginTitle: plugin.title,
           pluginExplain: defaultFeatureExplain || plugin.description,
-          pinyin: pinyin(plugin.name, { toneType: 'none', type: 'string' })
-            .replace(/\s+/g, '')
-            .toLowerCase(),
-          pinyinAbbr: pinyin(plugin.name, {
-            pattern: 'first',
-            toneType: 'none',
-            type: 'string'
-          })
-            .replace(/\s+/g, '')
-            .toLowerCase()
+          pinyin: pluginNamePy.pinyin,
+          pinyinAbbr: pluginNamePy.pinyinAbbr
         })
       }
 
@@ -813,66 +855,59 @@ export const useCommandDataStore = defineStore('commandData', () => {
         }
 
         for (const cmd of feature.cmds) {
-          const isMatchCmd =
-            typeof cmd === 'object' &&
-            ['regex', 'over', 'img', 'files', 'window'].includes(cmd.type)
-          const cmdName = isMatchCmd ? cmd.label : cmd
+          // 单 cmd 隔离：任意一条指令解析异常（例如对象型 cmd 缺 type 导致 cmdName 是对象）
+          // 不应让整个插件的其余指令、乃至全局搜索栏跟着崩溃。
+          try {
+            const { isMatchCmd, cmdName } = normalizeCmd(cmd)
+            const py = toPinyinFields(cmdName)
 
-          if (isMatchCmd) {
-            const matchCommand: Command = {
-              name: cmdName,
-              path: plugin.path,
-              icon: featureIcon,
-              type: 'plugin',
-              featureCode: feature.code,
+            if (isMatchCmd) {
+              const matchCommand: Command = {
+                name: cmdName,
+                path: plugin.path,
+                icon: featureIcon,
+                type: 'plugin',
+                featureCode: feature.code,
+                pluginName: plugin.name,
+                pluginTitle: plugin.title,
+                pluginExplain: feature.explain,
+                matchCmd: cmd,
+                cmdType: cmd.type,
+                mainPush: isMainPush,
+                pinyin: py.pinyin,
+                pinyinAbbr: py.pinyinAbbr
+              }
+
+              regexItems.push(matchCommand)
+
+              if (cmd.type === 'window') {
+                pluginItems.push(...getLaunchableAliasEntries(matchCommand, commandAliases))
+              }
+            } else {
+              const textCommand: Command = {
+                name: cmdName,
+                path: plugin.path,
+                icon: featureIcon,
+                type: 'plugin',
+                featureCode: feature.code,
+                pluginName: plugin.name,
+                pluginTitle: plugin.title,
+                pluginExplain: feature.explain,
+                cmdType: 'text',
+                mainPush: isMainPush,
+                pinyin: py.pinyin,
+                pinyinAbbr: py.pinyinAbbr
+              }
+
+              pluginItems.push(textCommand, ...getLaunchableAliasEntries(textCommand, commandAliases))
+            }
+          } catch (error) {
+            console.error('[CommandData] 构建插件指令失败，已跳过该指令:', {
               pluginName: plugin.name,
-              pluginTitle: plugin.title,
-              pluginExplain: feature.explain,
-              matchCmd: cmd,
-              cmdType: cmd.type,
-              mainPush: isMainPush,
-              pinyin: pinyin(cmdName, { toneType: 'none', type: 'string' })
-                .replace(/\s+/g, '')
-                .toLowerCase(),
-              pinyinAbbr: pinyin(cmdName, {
-                pattern: 'first',
-                toneType: 'none',
-                type: 'string'
-              })
-                .replace(/\s+/g, '')
-                .toLowerCase()
-            }
-
-            regexItems.push(matchCommand)
-
-            if (cmd.type === 'window') {
-              pluginItems.push(...getLaunchableAliasEntries(matchCommand, commandAliases))
-            }
-          } else {
-            const textCommand: Command = {
-              name: cmdName,
-              path: plugin.path,
-              icon: featureIcon,
-              type: 'plugin',
               featureCode: feature.code,
-              pluginName: plugin.name,
-              pluginTitle: plugin.title,
-              pluginExplain: feature.explain,
-              cmdType: 'text',
-              mainPush: isMainPush,
-              pinyin: pinyin(cmdName, { toneType: 'none', type: 'string' })
-                .replace(/\s+/g, '')
-                .toLowerCase(),
-              pinyinAbbr: pinyin(cmdName, {
-                pattern: 'first',
-                toneType: 'none',
-                type: 'string'
-              })
-                .replace(/\s+/g, '')
-                .toLowerCase()
-            }
-
-            pluginItems.push(textCommand, ...getLaunchableAliasEntries(textCommand, commandAliases))
+              cmd,
+              error
+            })
           }
         }
       }
@@ -884,32 +919,26 @@ export const useCommandDataStore = defineStore('commandData', () => {
   function buildAppCommandItems(rawApps: any[], commandAliases: CommandAliasStore): Command[] {
     return rawApps.flatMap((app) => {
       const extendedApp = app as any
+      const basePy = toPinyinFields(app.name)
       const baseApp: Command = {
         ...app,
         type: extendedApp.type || ('direct' as const),
         subType: extendedApp.subType || ('app' as const),
         cmdType: 'text',
         originalName: app.name,
-        pinyin: pinyin(app.name, { toneType: 'none', type: 'string' })
-          .replace(/\s+/g, '')
-          .toLowerCase(),
-        pinyinAbbr: pinyin(app.name, { pattern: 'first', toneType: 'none', type: 'string' })
-          .replace(/\s+/g, '')
-          .toLowerCase()
+        pinyin: basePy.pinyin,
+        pinyinAbbr: basePy.pinyinAbbr
       }
       const result: Command[] = [baseApp]
       if (extendedApp.aliases && Array.isArray(extendedApp.aliases)) {
         for (const alias of extendedApp.aliases) {
           if (alias && alias !== extendedApp.name) {
+            const aliasPy = toPinyinFields(alias)
             result.push({
               ...baseApp,
               name: alias,
-              pinyin: pinyin(alias, { toneType: 'none', type: 'string' })
-                .replace(/\s+/g, '')
-                .toLowerCase(),
-              pinyinAbbr: pinyin(alias, { pattern: 'first', toneType: 'none', type: 'string' })
-                .replace(/\s+/g, '')
-                .toLowerCase()
+              pinyin: aliasPy.pinyin,
+              pinyinAbbr: aliasPy.pinyinAbbr
             })
           }
         }

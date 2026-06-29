@@ -9,6 +9,7 @@ import httpServer from '../../core/httpServer.js'
 import mcpServer from '../../core/mcpServer.js'
 import superPanelManager from '../../core/superPanelManager.js'
 import translationManager from '../../core/translationManager.js'
+import providerManager from '../../core/provider/providerManager.js'
 import aiModelsAPI from '../renderer/aiModels.js'
 import commandsAPI from '../renderer/commands.js'
 import pluginsAPI from '../renderer/plugins.js'
@@ -565,6 +566,123 @@ export class InternalPluginAPI {
       }
       return await aiModelsAPI.deleteModel(modelId)
     })
+
+    // ==================== Provider（翻译 / OCR 等）管理 API ====================
+    ipcMain.handle('internal:providers-get-all', async (event, type?: string) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:providers-get-all')
+      }
+      try {
+        const data = providerManager.getAllProviders(type as never)
+        return { success: true, data }
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '未知错误'
+        }
+      }
+    })
+
+    ipcMain.handle('internal:providers-get-settings', async (event) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:providers-get-settings')
+      }
+      try {
+        return { success: true, data: providerManager.getSettings() }
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '未知错误'
+        }
+      }
+    })
+
+    ipcMain.handle(
+      'internal:providers-set-enabled',
+      async (event, providerId: string, enabled: boolean) => {
+        if (!requireInternalPlugin(this.pluginManager, event)) {
+          throw new PermissionDeniedError('internal:providers-set-enabled')
+        }
+        try {
+          const data = providerManager.setEnabled(providerId, enabled)
+          return { success: true, data }
+        } catch (error: unknown) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : '未知错误'
+          }
+        }
+      }
+    )
+
+    ipcMain.handle(
+      'internal:providers-set-default',
+      async (event, type: string, providerId: string) => {
+        if (!requireInternalPlugin(this.pluginManager, event)) {
+          throw new PermissionDeniedError('internal:providers-set-default')
+        }
+        try {
+          const data = providerManager.setDefault(type as never, providerId)
+          return { success: true, data }
+        } catch (error: unknown) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : '未知错误'
+          }
+        }
+      }
+    )
+
+    ipcMain.handle('internal:providers-get-params', async (event, providerId: string) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:providers-get-params')
+      }
+      try {
+        return { success: true, data: providerManager.getParams(providerId) }
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '未知错误'
+        }
+      }
+    })
+
+    ipcMain.handle(
+      'internal:providers-set-params',
+      async (event, providerId: string, params: Record<string, unknown>) => {
+        if (!requireInternalPlugin(this.pluginManager, event)) {
+          throw new PermissionDeniedError('internal:providers-set-params')
+        }
+        try {
+          const data = providerManager.setParams(providerId, params)
+          return { success: true, data }
+        } catch (error: unknown) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : '未知错误'
+          }
+        }
+      }
+    )
+
+    // 超级面板翻译状态（供翻译 tab 展示内置 Bergamot 引擎状态）
+    ipcMain.handle('internal:providers-translation-status', async (event) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:providers-translation-status')
+      }
+      return translationManager.getStatus()
+    })
+
+    ipcMain.handle(
+      'internal:providers-translation-set-enabled',
+      async (event, enabled: boolean) => {
+        if (!requireInternalPlugin(this.pluginManager, event)) {
+          throw new PermissionDeniedError('internal:providers-translation-set-enabled')
+        }
+        translationManager.updateEnabled(enabled)
+        return { success: true }
+      }
+    )
 
     // ==================== 全局快捷键 API ====================
     ipcMain.handle(

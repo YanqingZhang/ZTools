@@ -69,12 +69,12 @@ const homeRoutes: MenuRouterItemType[] = [
     }
   },
   {
-    path: '/aiModels',
-    name: 'AiModels',
-    component: () => import('@/views/AiModelsSetting/AiModelsSetting.vue'),
+    path: '/providers',
+    name: 'Providers',
+    component: () => import('@/views/ProvidersSetting/ProvidersSetting.vue'),
     meta: {
       menu: {
-        label: 'AI 模型',
+        label: '提供商',
         icon: 'i-z-brain'
       }
     }

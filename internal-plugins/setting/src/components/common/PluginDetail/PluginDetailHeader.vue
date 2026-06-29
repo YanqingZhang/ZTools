@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, ref, watch } from 'vue'
 import ProgressCircleButton from '@/components/common/ProgressCircleButton/ProgressCircleButton.vue'
 import type { PluginDownloadState, PluginItem } from './types'
 
@@ -14,6 +15,48 @@ const emit = defineEmits<{
   (e: 'download'): void
   (e: 'upgrade'): void
 }>()
+
+// 本插件提供的 provider 能力标签（翻译 / OCR）。
+// 仅对已安装插件展示，从主进程聚合后的 provider 列表中按 pluginName 过滤。
+const providerTypes = ref<Array<'translation' | 'ocr'>>([])
+
+async function loadProviderTypes(): Promise<void> {
+  if (!props.plugin.installed || !props.plugin.name) {
+    providerTypes.value = []
+    return
+  }
+  try {
+    const res = await window.ztools.internal.providers.getAll()
+    if (res.success && Array.isArray(res.data)) {
+      const types = new Set<'translation' | 'ocr'>()
+      for (const entry of res.data) {
+        if (entry.source === 'plugin' && entry.pluginName === props.plugin.name && entry.type) {
+          types.add(entry.type)
+        }
+      }
+      providerTypes.value = Array.from(types)
+    } else {
+      providerTypes.value = []
+    }
+  } catch {
+    providerTypes.value = []
+  }
+}
+
+watch(
+  () => [props.plugin.name, props.plugin.installed],
+  () => {
+    loadProviderTypes()
+  },
+  { immediate: true }
+)
+
+const providerLabels = computed(() =>
+  providerTypes.value.map((type) => ({
+    type,
+    label: type === 'translation' ? '翻译提供商' : 'OCR 提供商'
+  }))
+)
 
 function formatSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return ''
@@ -49,6 +92,14 @@ function openHomepage(): void {
           <div class="detail-title">
             <span class="detail-name">{{ plugin.title || plugin.name }}</span>
             <slot name="title-badge" />
+            <span
+              v-for="p in providerLabels"
+              :key="p.type"
+              class="provider-badge"
+              :title="`本插件提供 ${p.label}（可在「设置 → 提供商」中启用）`"
+            >
+              {{ p.label }}
+            </span>
           </div>
           <div class="detail-desc">{{ plugin.description || '暂无描述' }}</div>
         </div>
@@ -366,6 +417,17 @@ function openHomepage(): void {
   align-items: baseline;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.provider-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 500;
+  color: #0891b2;
+  background: rgba(8, 145, 178, 0.12);
+  padding: 2px 8px;
+  border-radius: 4px;
+  line-height: 1.4;
 }
 
 .detail-name {

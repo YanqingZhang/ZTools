@@ -70,6 +70,8 @@ let logEntriesCallback = null
 let foundInPageCallback = null
 // 插件侧注册的 MCP 工具处理器，实际执行时由主进程回调到这里。
 const registeredTools = new Map()
+// 插件侧注册的 provider 处理器，按 type 存放，由主进程聚合后调用。
+const registeredProviders = new Map()
 
 /**
  * 创建懒注册的 IPC 事件监听器。
@@ -713,6 +715,73 @@ window.ztools = {
     return await handler(input ?? {})
   },
 
+  // 注册 provider（翻译、OCR 等）处理器。
+  // 首参 key 需与 plugin.json 的 providers 字段 key 一致；type 由声明决定。
+  // 一个插件可对同一 type 声明多条（如 baidu / google 都为 translation），只要 key 不同。
+  registerProvider: (key, handler) => {
+    const providerKey = typeof key === 'string' ? key.trim() : ''
+    if (!providerKey) {
+      throw new Error('provider key 不能为空')
+    }
+    if (typeof handler !== 'function') {
+      throw new Error(`provider "${providerKey}" 的处理器必须是函数`)
+    }
+
+    registeredProviders.set(providerKey, handler)
+    const result = electron.ipcRenderer.sendSync('plugin:provider-register', providerKey)
+    if (!result?.success) {
+      registeredProviders.delete(providerKey)
+      throw new Error(result?.error || `provider "${providerKey}" 注册失败`)
+    }
+  },
+
+  // 由主进程回调执行已注册的 provider 处理器，不对插件开发者直接暴露。
+  __invokeRegisteredProvider: async (key, input) => {
+    const providerKey = typeof key === 'string' ? key.trim() : ''
+    const handler = registeredProviders.get(providerKey)
+    if (!handler) {
+      throw new Error(`provider "${providerKey}" 未注册`)
+    }
+    return await handler(input ?? {})
+  },
+
+  // ==================== 作为消费方调用其它 provider 的能力 ====================
+  // 查询/调用入口统一经 plugin.api 分发器走主进程 providerManager，不在 preload 侧持有状态。
+  providers: {
+    // 查询某 type 下全部渠道，每个渠道带 isDefault 标记。type 缺省时返回所有 type 的渠道。
+    getProviders: async (type) => {
+      return await ipcInvoke('providersGetProviders', { type })
+    },
+    // 单独查询某 type 的默认渠道（无可用时返回 null）。
+    getDefaultProvider: async (type) => {
+      return await ipcInvoke('providersGetDefault', { type })
+    },
+    // 统一调用入口：providerId 可选，缺省走该 type 的默认渠道。
+    invokeProvider: async (type, input, providerId) => {
+      return await ipcInvoke('providersInvoke', { type, input, providerId })
+    }
+  },
+
+  // 翻译便捷封装：ztools.translate(text, { from?, to?, providerId? }) → { text, detectedFrom? }
+  translate: async (text, options = {}) => {
+    const { from, to, providerId } = options || {}
+    return await ipcInvoke('providersInvoke', {
+      type: 'translation',
+      input: { text, from, to },
+      providerId
+    })
+  },
+
+  // OCR 便捷封装：ztools.ocr(image, { lang?, providerId? }) → { text, blocks?, confidence? }
+  ocr: async (image, options = {}) => {
+    const { lang, providerId } = options || {}
+    return await ipcInvoke('providersInvoke', {
+      type: 'ocr',
+      input: { image, lang },
+      providerId
+    })
+  },
+
   // AI 调用 API
   ai: (option, streamCallback) => {
     const requestId = Math.random().toString(36).substr(2, 9)
@@ -1099,6 +1168,37 @@ window.ztools = {
         await electron.ipcRenderer.invoke('internal:ai-models-update', model),
       delete: async (modelId) =>
         await electron.ipcRenderer.invoke('internal:ai-models-delete', modelId)
+    },
+
+    // ==================== Provider（翻译 / OCR 等）管理 API ====================
+    providers: {
+      getAll: async (type) => await electron.ipcRenderer.invoke('internal:providers-get-all', type),
+      getSettings: async () => await electron.ipcRenderer.invoke('internal:providers-get-settings'),
+      setEnabled: async (providerId, enabled) =>
+        await electron.ipcRenderer.invoke('internal:providers-set-enabled', providerId, enabled),
+      setDefault: async (type, providerId) =>
+        await electron.ipcRenderer.invoke('internal:providers-set-default', type, providerId),
+      getParams: async (providerId) =>
+        await electron.ipcRenderer.invoke('internal:providers-get-params', providerId),
+      setParams: async (providerId, params) =>
+        await electron.ipcRenderer.invoke('internal:providers-set-params', providerId, params),
+      // 翻译引擎（内置 Bergamot）状态与总开关
+      getTranslationStatus: async () =>
+        await electron.ipcRenderer.invoke('internal:providers-translation-status'),
+      setTranslationEnabled: async (enabled) =>
+        await electron.ipcRenderer.invoke('internal:providers-translation-set-enabled', enabled)
+    },
+
+    // ==================== 网页快开 API ====================
+    webSearch: {
+      getAll: async () => await electron.ipcRenderer.invoke('internal:web-search-get-all'),
+      add: async (engine) => await electron.ipcRenderer.invoke('internal:web-search-add', engine),
+      update: async (engine) =>
+        await electron.ipcRenderer.invoke('internal:web-search-update', engine),
+      delete: async (engineId) =>
+        await electron.ipcRenderer.invoke('internal:web-search-delete', engineId),
+      fetchFavicon: async (url) =>
+        await electron.ipcRenderer.invoke('internal:web-search-fetch-favicon', url)
     },
 
     // ==================== 悬浮球 API ====================

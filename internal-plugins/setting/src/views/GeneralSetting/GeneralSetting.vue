@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   DEFAULT_AVATAR,
   DEFAULT_PLACEHOLDER,
@@ -153,13 +154,18 @@ const superPanelMouseButton = ref<MouseButtonType>('middle')
 const superPanelLongPressMs = ref(500)
 const superPanelBlockedApps = ref<Array<{ app: string; bundleId?: string; label?: string }>>([])
 
+const router = useRouter()
+
+// 跳转到提供商页面的翻译 tab（翻译能力已迁移）
+function goToTranslationProviders(): void {
+  router.push({ name: 'Providers', query: { tab: 'translation' } })
+}
+
 // 唤醒黑名单
 const wakeupBlacklist = ref<Array<{ app: string; bundleId?: string; label?: string }>>([])
 
-// 超级面板翻译设置
+// 超级面板翻译设置（开关已迁移到「提供商 → 翻译」，这里仅保留字段以兼容历史持久化数据）
 const superPanelTranslateEnabled = ref(false)
-const translationStatus = ref<'idle' | 'downloading' | 'initializing' | 'ready' | 'error'>('idle')
-
 // 超级面板触发模式（计算属性）
 const superPanelTriggerMode = computed({
   get: () => {
@@ -684,40 +690,6 @@ async function handleSuperPanelEnabledChange(): Promise<void> {
   }
 }
 
-// 处理超级面板翻译开关变化
-async function handleSuperPanelTranslateChange(): Promise<void> {
-  try {
-    await saveSettings()
-    await window.ztools.internal.updateSuperPanelTranslate(superPanelTranslateEnabled.value)
-    if (superPanelTranslateEnabled.value) {
-      translationStatus.value = 'downloading'
-      // 轮询翻译状态
-      pollTranslationStatus()
-    } else {
-      translationStatus.value = 'idle'
-    }
-    console.log('超级面板翻译开关已更新:', superPanelTranslateEnabled.value)
-  } catch (err) {
-    console.error('更新超级面板翻译开关失败:', err)
-  }
-}
-
-// 轮询翻译引擎状态
-function pollTranslationStatus(): void {
-  const poll = async (): Promise<void> => {
-    try {
-      const result = await window.ztools.internal.getTranslationStatus()
-      translationStatus.value = result.status
-      if (result.status === 'downloading' || result.status === 'initializing') {
-        setTimeout(poll, 1000)
-      }
-    } catch {
-      // ignore
-    }
-  }
-  poll()
-}
-
 // 处理超级面板触发模式变化
 async function handleSuperPanelTriggerModeChange(mode: string | number): Promise<void> {
   try {
@@ -1228,9 +1200,6 @@ async function loadSettings(): Promise<void> {
       superPanelBlockedApps.value = data.superPanelBlockedApps ?? []
       wakeupBlacklist.value = data.wakeupBlacklist ?? []
       superPanelTranslateEnabled.value = data.superPanelTranslateEnabled ?? false
-      if (superPanelTranslateEnabled.value) {
-        pollTranslationStatus()
-      }
       // 窗口材质由主进程启动时保证一定有值，无需兜底
       windowMaterial.value = data.windowMaterial
       acrylicLightOpacity.value = data.acrylicLightOpacity ?? 78
@@ -2010,49 +1979,13 @@ onUnmounted(() => {
 
       <div v-if="superPanelEnabled" class="setting-item">
         <div class="setting-label">
-          <span>选中翻译</span>
-          <span class="setting-desc">
-            选中文字触发超级面板时，自动翻译为中文显示（使用 Bergamot 离线翻译引擎，首次启用需下载约
-            55MB 模型）
-          </span>
-          <span
-            v-if="superPanelTranslateEnabled && translationStatus === 'downloading'"
-            class="setting-desc"
-            style="color: var(--primary-color)"
+          <span>翻译</span>
+          <span class="setting-desc"
+            >翻译能力已迁移至「提供商 → 翻译」，点击前往管理翻译引擎与提供商</span
           >
-            正在下载翻译模型...
-          </span>
-          <span
-            v-else-if="superPanelTranslateEnabled && translationStatus === 'initializing'"
-            class="setting-desc"
-            style="color: var(--primary-color)"
-          >
-            正在初始化翻译引擎...
-          </span>
-          <span
-            v-else-if="superPanelTranslateEnabled && translationStatus === 'ready'"
-            class="setting-desc"
-            style="color: var(--success-color)"
-          >
-            翻译引擎就绪
-          </span>
-          <span
-            v-else-if="superPanelTranslateEnabled && translationStatus === 'error'"
-            class="setting-desc"
-            style="color: var(--danger-color)"
-          >
-            翻译引擎初始化失败
-          </span>
         </div>
         <div class="setting-control">
-          <label class="toggle">
-            <input
-              v-model="superPanelTranslateEnabled"
-              type="checkbox"
-              @change="handleSuperPanelTranslateChange"
-            />
-            <span class="toggle-slider"></span>
-          </label>
+          <button class="btn" @click="goToTranslationProviders">前往翻译</button>
         </div>
       </div>
 

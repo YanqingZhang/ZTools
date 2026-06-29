@@ -428,6 +428,85 @@ declare global {
           delete: (id: string) => Promise<{ success: boolean; error?: string }>
         }
 
+        // Provider（翻译 / OCR 等）管理
+        providers: {
+          getAll: (type?: 'translation' | 'ocr') => Promise<{
+            success: boolean
+            data?: Array<{
+              id: string
+              type: 'translation' | 'ocr'
+              label: string
+              description: string
+              source: 'builtin' | 'plugin'
+              pluginName?: string
+              pluginPath?: string
+              pluginLogo?: string
+            }>
+            error?: string
+          }>
+          getSettings: () => Promise<{
+            success: boolean
+            data?: {
+              enabled: Partial<Record<'translation' | 'ocr', string[]>>
+              defaultId: Partial<Record<'translation' | 'ocr', string>>
+              params: Record<string, Record<string, unknown>>
+            }
+            error?: string
+          }>
+          setEnabled: (
+            providerId: string,
+            enabled: boolean
+          ) => Promise<{
+            success: boolean
+            data?: {
+              enabled: Partial<Record<'translation' | 'ocr', string[]>>
+              defaultId: Partial<Record<'translation' | 'ocr', string>>
+              params: Record<string, Record<string, unknown>>
+            }
+            error?: string
+          }>
+          setDefault: (
+            type: 'translation' | 'ocr',
+            providerId: string
+          ) => Promise<{
+            success: boolean
+            data?: {
+              enabled: Partial<Record<'translation' | 'ocr', string[]>>
+              defaultId: Partial<Record<'translation' | 'ocr', string>>
+              params: Record<string, Record<string, unknown>>
+            }
+            error?: string
+          }>
+          getParams: (
+            providerId: string
+          ) => Promise<{ success: boolean; data?: Record<string, unknown>; error?: string }>
+          setParams: (
+            providerId: string,
+            params: Record<string, unknown>
+          ) => Promise<{ success: boolean; data?: any; error?: string }>
+          // 翻译引擎（内置 Bergamot）状态与总开关
+          getTranslationStatus: () => Promise<{
+            status: 'idle' | 'downloading' | 'initializing' | 'ready' | 'error'
+            error?: string
+          }>
+          setTranslationEnabled: (enabled: boolean) => Promise<{ success: boolean }>
+        }
+
+        // 网页快开
+        webSearch: {
+          getAll: () => Promise<{
+            success: boolean
+            data?: WebSearchEngine[]
+            error?: string
+          }>
+          add: (engine: WebSearchEngine) => Promise<{ success: boolean; error?: string }>
+          update: (engine: WebSearchEngine) => Promise<{ success: boolean; error?: string }>
+          delete: (id: string) => Promise<{ success: boolean; error?: string }>
+          fetchFavicon: (
+            url: string
+          ) => Promise<{ success: boolean; data?: string; error?: string }>
+        }
+
         // 超级面板
         updateSuperPanelConfig: (config: {
           enabled: boolean

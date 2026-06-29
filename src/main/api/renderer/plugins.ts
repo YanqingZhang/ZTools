@@ -6,6 +6,7 @@ import { pathToFileURL } from 'url'
 import { normalizeIconPath } from '../../common/iconUtils'
 import { isBundledInternalPlugin } from '../../core/internalPlugins'
 import lmdbInstance from '../../core/lmdb/lmdbInstance'
+import providerManager from '../../core/provider/providerManager'
 import windowManager from '../../managers/windowManager'
 import { httpGet } from '../../utils/httpRequest.js'
 import { pluginFeatureAPI } from '../plugin/feature'
@@ -475,6 +476,14 @@ export class PluginsAPI {
       databaseAPI.dbPut('plugins', plugins)
 
       this.devProjects.removePluginUsageData(pluginInfo.name)
+
+      // 清理该插件的 provider 配置（启用 / 默认 / 自定义参数）
+      // 与插件数据无关，卸载即应移除，避免残留指向已卸载插件的 provider 引用。
+      try {
+        providerManager.cleanupForPlugin(pluginInfo.name)
+      } catch (error) {
+        console.error('[Plugins] 清理 provider 配置失败:', error)
+      }
 
       if (options.deleteData !== false) {
         await databaseAPI.clearPluginData(pluginInfo.name)

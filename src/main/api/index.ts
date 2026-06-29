@@ -31,6 +31,7 @@ import pluginInputAPI from './plugin/input'
 import internalPluginAPI from './plugin/internal'
 import pluginLifecycleAPI from './plugin/lifecycle'
 import { initPluginApiDispatcher } from './plugin/pluginApiDispatcher'
+import pluginProvidersAPI from './plugin/providers'
 import pluginRedirectAPI from './plugin/redirect'
 import pluginScreenAPI from './plugin/screen'
 import pluginShellAPI from './plugin/shell'
@@ -52,6 +53,7 @@ import pluginFFmpegAPI from './plugin/ffmpeg'
 
 import httpServer from '../core/httpServer'
 import mcpServer from '../core/mcpServer'
+import providerManager from '../core/provider/providerManager'
 import { runStartupDataMigrations } from '../core/startupDataMigrations'
 import superPanelManager from '../core/superPanelManager'
 import translationManager from '../core/translationManager'
@@ -117,6 +119,10 @@ class APIManager {
 
     // 初始化插件API
     pluginToolsAPI.init(pluginManager)
+    // Provider 管理器（翻译、OCR 等），需在插件 API 之后、消费方之前初始化
+    providerManager.init(pluginManager)
+    // 暴露给所有插件的 provider 消费入口（查询默认渠道 / 调用），依赖 providerManager 已就绪
+    pluginProvidersAPI.init()
     pluginAiAPI.init(mainWindow, pluginManager)
     pluginLifecycleAPI.init(mainWindow, pluginManager)
     pluginUIAPI.init(mainWindow, pluginManager)
@@ -162,6 +168,21 @@ class APIManager {
 
     // 初始化翻译管理器
     translationManager.init()
+
+    // 将内置 Bergamot 翻译引擎注册为 translation 类型 provider
+    providerManager.registerBuiltinProvider({
+      name: 'bergamot',
+      type: 'translation',
+      label: '离线翻译引擎（Bergamot）',
+      description: '英译中离线引擎，首次启用需下载约 55MB 模型',
+      isReady: () => translationManager.getStatus().status === 'ready',
+      invoke: async (input) => {
+        const { text, from } = input as { text: string; from?: string; to?: string }
+        // 当前内置引擎仅支持 en→zh，忽略 from/to 参数
+        const result = await translationManager.translate(text)
+        return { text: result || '', detectedFrom: from }
+      }
+    })
 
     // 设置一些特殊的IPC处理器
     this.setupSpecialHandlers()
