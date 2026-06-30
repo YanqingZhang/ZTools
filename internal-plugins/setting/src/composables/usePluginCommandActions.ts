@@ -220,7 +220,9 @@ export function usePluginCommandActions(options: UsePluginCommandActionsOptions)
     const pinned = isPinnedToSearch(pluginPath, featureCode)
 
     if (pinned) {
-      await window.ztools.internal.unpinApp(pluginPath || '', featureCode, cmdName)
+      // 注意：主进程 filterOutCommand 对插件类型按 pluginName 匹配（而非指令名），
+      // 因此取消固定时必须传 pluginName，否则无法命中存储项导致取消失败。
+      await window.ztools.internal.unpinApp(pluginPath || '', featureCode, pluginName)
     } else {
       const command = findPluginCommand(featureCode, cmdName)
 
@@ -244,7 +246,11 @@ export function usePluginCommandActions(options: UsePluginCommandActionsOptions)
 
   async function loadPluginCommands(): Promise<void> {
     const pluginPath = getPluginPath()
-    if (!pluginPath) return
+    // 切换到非插件来源（如系统应用）时清空缓存，避免残留上一个插件的指令数据
+    if (!pluginPath) {
+      pluginCommands.value = []
+      return
+    }
 
     try {
       const result = await window.ztools.internal.getCommands()
@@ -395,6 +401,36 @@ export function usePluginCommandActions(options: UsePluginCommandActionsOptions)
     return items
   }
 
+  // ============ 匹配指令详情弹窗（集成禁用钩子） ============
+  // 放在菜单处理之前，确保 cmdKey / openMatchCommandDetail 等先定义后被引用。
+
+  const {
+    selectedMatchCommand,
+    selectedMatchCommandDisabled,
+    openMatchCommandDetail,
+    closeMatchCommandDetail,
+    toggleSelectedMatchCommandDisabled,
+    cmdKey,
+    normalizeCommand,
+    isMatchCommand
+  } = useMatchCommandDetail({
+    getPluginName: () => getPluginName() || '',
+    isDisabled: (detail: SelectedMatchCommand) =>
+      isCommandDisabled(
+        detail.pluginName || getPluginName() || '',
+        detail.feature.code || '',
+        cmdKey(detail.command),
+        (detail.command.type || 'text') as CommandCmdType
+      ),
+    toggleDisabled: (detail: SelectedMatchCommand) =>
+      toggleCommandDisabled(
+        detail.pluginName || getPluginName() || '',
+        detail.feature.code || '',
+        cmdKey(detail.command),
+        (detail.command.type || 'text') as CommandCmdType
+      )
+  })
+
   async function handleMenuSelect(
     key: string,
     pluginName: string,
@@ -435,8 +471,8 @@ export function usePluginCommandActions(options: UsePluginCommandActionsOptions)
     // 匹配指令的 name 在不同来源下字段不一致：
     // - 全部指令页：来自 canonical regexCommand.name（已规范化）
     // - 插件详情页：来自 plugin.json 原始对象，仅有 label
-    // 这里统一回退 label/text/name，与 commandId 计算规则保持一致。
-    const cmdName = cmd.label || cmd.text || cmd.name || ''
+    // 这里统一使用 cmdKey，与 commandId 计算规则保持一致。
+    const cmdName = cmdKey(cmd)
     await handleMenuSelect(
       key,
       pluginName,
@@ -445,35 +481,6 @@ export function usePluginCommandActions(options: UsePluginCommandActionsOptions)
       (cmd.type || 'text') as CommandCmdType
     )
   }
-
-  // ============ 匹配指令详情弹窗（集成禁用钩子） ============
-
-  const {
-    selectedMatchCommand,
-    selectedMatchCommandDisabled,
-    openMatchCommandDetail,
-    closeMatchCommandDetail,
-    toggleSelectedMatchCommandDisabled,
-    cmdKey,
-    normalizeCommand,
-    isMatchCommand
-  } = useMatchCommandDetail({
-    getPluginName: () => getPluginName() || '',
-    isDisabled: (detail: SelectedMatchCommand) =>
-      isCommandDisabled(
-        detail.pluginName || getPluginName() || '',
-        detail.feature.code || '',
-        detail.command.label || detail.command.name || '',
-        (detail.command.type || 'text') as CommandCmdType
-      ),
-    toggleDisabled: (detail: SelectedMatchCommand) =>
-      toggleCommandDisabled(
-        detail.pluginName || getPluginName() || '',
-        detail.feature.code || '',
-        detail.command.label || detail.command.name || '',
-        (detail.command.type || 'text') as CommandCmdType
-      )
-  })
 
   // ============ 初始化 ============
 

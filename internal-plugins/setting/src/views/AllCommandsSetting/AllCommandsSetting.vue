@@ -588,10 +588,9 @@ async function loadCommands(): Promise<void> {
 function selectSource(source: Source): void {
   selectedSource.value = source
   activeTab.value = 'text'
-  // 切换来源后刷新当前插件的指令快照（供打开/固定/别名取 icon 等运行时字段）
-  if (source.path) {
-    void loadPluginCommands()
-  }
+  // 切换来源后刷新指令快照：插件来源加载其 canonical 指令（供打开/固定/别名取 icon 等运行时字段），
+  // 非插件来源（如系统应用）则清空缓存，避免残留上一个插件的数据。
+  void loadPluginCommands()
 }
 
 // 初始化
