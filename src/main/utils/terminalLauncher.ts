@@ -1,5 +1,6 @@
 import { exec, spawn } from 'child_process'
 import { promisify } from 'util'
+import databaseAPI from '../api/shared/database'
 
 const execAsync = promisify(exec)
 
@@ -25,12 +26,12 @@ interface PresetEntry {
 
 // ==================== 路径转义（从 systemCommands 迁入，行为不变）====================
 
-function escapePowerShellPath(folderPath: string): string {
+export function escapePowerShellPath(folderPath: string): string {
   const escaped = folderPath.replace(/'/g, "''")
   return `'${escaped}'`
 }
 
-function escapeCmdPath(folderPath: string): string {
+export function escapeCmdPath(folderPath: string): string {
   const escaped = folderPath.replace(/"/g, '^"')
   return `"${escaped}"`
 }
@@ -68,7 +69,7 @@ function parseCommandString(cmd: string): [string, string[]] {
 // ==================== 执行原语 ====================
 
 /** 执行 AppleScript（转义单引号，防止 shell 注入） */
-export async function runAppleScript(script: string): Promise<void> {
+async function runAppleScript(script: string): Promise<void> {
   const escaped = script.replace(/'/g, "'\\''")
   await execAsync(`osascript -e '${escaped}'`)
 }
@@ -240,4 +241,42 @@ export function parseCustomCommand(template: string): { command: string; args: s
   const [command, args] = parseCommandString(trimmed)
   if (!command) return null
   return { command, args }
+}
+
+// ==================== 编排：读取配置 → 分发 ====================
+
+async function executePreset(entry: PresetEntry | null, folderPath: string): Promise<boolean> {
+  if (!entry) return false
+  const preset = entry.preset
+  if (preset.type === 'cli') {
+    return runCli(preset.command, applyPathToArgs(preset.args, folderPath))
+  }
+  if (preset.type === 'applescript') {
+    await runAppleScript(preset.build(folderPath))
+    return true
+  }
+  return preset.run(folderPath)
+}
+
+export async function openInTerminal(folderPath: string): Promise<boolean> {
+  try {
+    const settings = (databaseAPI.dbGet('settings-general') as Record<string, any>) || {}
+    const terminal: string | undefined = settings.terminal
+    const customCommand: string | undefined = settings.terminalCustomCommand
+
+    // 自定义命令优先
+    if (terminal === 'custom') {
+      const parsed = parseCustomCommand(customCommand ?? '')
+      if (parsed) {
+        return runCli(parsed.command, applyPathToArgs(parsed.args, folderPath))
+      }
+      // 自定义命令为空 → 回退默认
+      return executePreset(resolvePreset('default', process.platform), folderPath)
+    }
+
+    return executePreset(resolvePreset(terminal, process.platform), folderPath)
+  } catch (error) {
+    console.error('[TerminalLauncher] 打开终端失败:', error)
+    return false
+  }
 }
