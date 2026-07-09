@@ -1,5 +1,9 @@
 const fs = require('fs/promises')
 const path = require('path')
+const { execFile } = require('child_process')
+const { promisify } = require('util')
+
+const execFileAsync = promisify(execFile)
 
 async function pathExists(p) {
   try {
@@ -30,6 +34,39 @@ async function copy(src, dest) {
     await ensureDir(path.dirname(dest))
     await fs.copyFile(src, dest)
   }
+}
+
+async function adHocSignMacApp(appPath) {
+  if (process.env.ZTOOLS_MAC_ADHOC_SIGN === 'false') {
+    console.log('\n已跳过 macOS ad-hoc 签名: ZTOOLS_MAC_ADHOC_SIGN=false')
+    return
+  }
+
+  const entitlementsPath = path.resolve(__dirname, 'entitlements.mac.plist')
+  const signArgs = [
+    '--force',
+    '--deep',
+    '--sign',
+    '-',
+    '--timestamp=none',
+    '--options',
+    'runtime',
+    '--entitlements',
+    entitlementsPath,
+    appPath
+  ]
+
+  console.log('\n开始 macOS ad-hoc 签名...')
+  await execFileAsync('/usr/bin/codesign', signArgs, { maxBuffer: 1024 * 1024 * 10 })
+
+  console.log('正在验证 macOS 签名...')
+  await execFileAsync(
+    '/usr/bin/codesign',
+    ['--verify', '--deep', '--strict', '--verbose=2', appPath],
+    { maxBuffer: 1024 * 1024 * 10 }
+  )
+
+  console.log('macOS ad-hoc 签名完成')
 }
 
 module.exports = async function (context) {
@@ -305,6 +342,12 @@ module.exports = async function (context) {
     }
   } catch (err) {
     console.error('打包更新文件失败:', err)
+  }
+
+  if (context.electronPlatformName === 'darwin') {
+    const appName = context.packager.appInfo.productFilename
+    const appPath = path.join(context.appOutDir, `${appName}.app`)
+    await adHocSignMacApp(appPath)
   }
 }
 
