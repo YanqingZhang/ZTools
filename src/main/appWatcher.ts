@@ -28,11 +28,16 @@ class AppWatcher {
   private flatRootWatcher: FSWatcher | null = null
   private mainWindow: BrowserWindow | null = null
   private debounceTimer: NodeJS.Timeout | null = null
+  private started = false
   private readonly DEBOUNCE_DELAY = 1000 // 1秒防抖
 
   // 初始化监听器
   public init(mainWindow: BrowserWindow): void {
     this.mainWindow = mainWindow
+    if (this.started) {
+      return
+    }
+    this.started = true
     this.startWatching()
   }
 
@@ -241,6 +246,7 @@ class AppWatcher {
     }
     this.recursiveWatcher = null
     this.flatRootWatcher = null
+    this.started = false
 
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer)

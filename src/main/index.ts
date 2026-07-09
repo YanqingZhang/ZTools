@@ -5,6 +5,7 @@ import log from 'electron-log'
 import path from 'path'
 import lmdbInstance from './core/lmdb/lmdbInstance'
 import api from './api/index'
+import appsAPI from './api/renderer/commands'
 import pluginsAPI from './api/renderer/plugins'
 import appWatcher from './appWatcher'
 import activityHeartbeatService from './core/activity/heartbeatService'
@@ -149,8 +150,10 @@ app.whenReady().then(async () => {
   if (mainWindow) {
     api.init(mainWindow, pluginManager)
     pluginManager.init(mainWindow)
-    // 初始化应用目录监听器
-    appWatcher.init(mainWindow)
+    // 首次应用列表准备完成后再初始化应用目录监听器，避免启动时与应用扫描抢占磁盘 I/O
+    appsAPI.setAfterFirstAppsReadyCallback(() => {
+      appWatcher.init(mainWindow)
+    })
     activityHeartbeatService.start()
   }
 
@@ -158,7 +161,7 @@ app.whenReady().then(async () => {
   windowManager.registerShortcut()
 
   // 初始化悬浮球（从配置决定是否显示）
-  floatingBallManager.init()
+  await floatingBallManager.init()
 
   // 自动启动已配置的"跟随主程序同时启动运行"的插件
   if (mainWindow) {

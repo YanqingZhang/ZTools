@@ -38,6 +38,7 @@
     "build:linux:arm64": "pnpm build && electron-builder --linux --arm64",
     "updater": "node scripts/updater.mjs",
     "test": "vitest run",
+    "test:windows-scanner": "electron scripts/compare-windows-scanner.cjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "sync-api-types": "node scripts/sync-api-types.js",

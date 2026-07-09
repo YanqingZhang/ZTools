@@ -26,6 +26,14 @@ interface UwpAppInfo {
   installLocation: string
 }
 
+export interface WindowsShortcutInfo {
+  name: string
+  path: string
+  icon?: string
+  targetPath?: string
+  sourceType?: 'lnk' | 'url' | 'lnk-url' | string
+}
+
 export interface FileLocationWindowInfo {
   platform?: 'win32' | 'darwin'
   kind?: 'windows-explorer' | 'windows-file-dialog' | 'mac-finder' | 'mac-file-dialog'
@@ -84,6 +92,11 @@ interface NativeAddon {
   launchUwpApp: (appId: string) => boolean
   getFileIcon: (filePath: string) => Promise<Buffer>
   resolveMuiStrings: (refs: string[]) => { [ref: string]: string }
+  scanWindowsShortcuts: (
+    scanPaths: string[],
+    rootScanPaths: string[],
+    skipFolders: string[]
+  ) => WindowsShortcutInfo[]
   startColorPicker: (callback: (result: { success: boolean; hex: string | null }) => void) => void
   stopColorPicker: () => void
   /** 通过 Unicode 输入法模拟键入单个字符/字素簇 */
@@ -985,6 +998,22 @@ export class MuiResolver {
     }
     const result = (addon as NativeAddon).resolveMuiStrings(refs)
     return new Map(Object.entries(result))
+  }
+}
+
+export class WindowsShortcutScanner {
+  static scan(
+    scanPaths: string[],
+    rootScanPaths: string[],
+    skipFolders: string[]
+  ): WindowsShortcutInfo[] {
+    if (platform !== 'win32') {
+      throw new Error('WindowsShortcutScanner is only supported on Windows')
+    }
+    if (!Array.isArray(scanPaths) || !Array.isArray(rootScanPaths) || !Array.isArray(skipFolders)) {
+      throw new TypeError('scanPaths, rootScanPaths and skipFolders must be arrays')
+    }
+    return (addon as NativeAddon).scanWindowsShortcuts(scanPaths, rootScanPaths, skipFolders)
   }
 }
 
