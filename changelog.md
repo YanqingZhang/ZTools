@@ -1,4 +1,4 @@
-# 3.0.0-beta.4
+# 3.0.0-beta.5
 
 ## 新功能 (Feat)
 
@@ -49,6 +49,7 @@
 
 ## 重构 (Refactor)
 
+- windows首次扫描应用使用native，加快扫描速度
 - 重构云同步为 CouchDB 风格 `_attachments` + digest blob 模型，移除旧 WebDAV 同步实现
 - 重构同步 checkpoint、持久化任务队列、文档/附件重试和 LMDB 同步数据层
 - 重构插件数据存储路由，拆分设备库和账号库，为多账号数据隔离做准备
@@ -58,6 +59,7 @@
 
 ## 其他 (Chore)
 
+- 更新appId
 - 更新 Windows 和 macOS 原生模块
 - 移除 `pnpm-workspace.yaml`
 - 移除 sharp 相关 API
