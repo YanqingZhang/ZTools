@@ -65,6 +65,7 @@ import { useCommandDataStore } from '../../stores/commandDataStore'
 import { useWindowStore } from '../../stores/windowStore'
 import VerticalList from '../common/VerticalList.vue'
 import AggregateView from './AggregateView.vue'
+import { buildAggregateNavigationGrid } from './navigationGrid'
 
 // MatchFile 接口（传递给插件的文件格式）
 interface MatchFile {
@@ -213,124 +214,34 @@ const isSearchResultsExpanded = ref(false)
 const isBestMatchesExpanded = ref(false)
 const isRecommendationsExpanded = ref(false)
 
-// 将一维数组转换为二维数组(每行9个)
-function arrayToGrid(arr: any[], cols = 9): any[][] {
-  const grid: any[][] = []
-  for (let i = 0; i < arr.length; i += cols) {
-    grid.push(arr.slice(i, i + cols))
-  }
-  return grid
-}
-
-// 获取可见的项目（根据折叠状态）
-function getVisibleItems(items: any[], expanded: boolean, defaultVisibleRows: number): any[] {
-  const defaultVisibleCount = 9 * defaultVisibleRows
-  if (items.length <= defaultVisibleCount) {
-    return items
-  }
-  return expanded ? items : items.slice(0, defaultVisibleCount)
-}
-
 // 构建导航网格
 const navigationGrid = computed(() => {
-  const sections: any[] = []
-
   // 列表模式：使用一维数组（每个项目占一行）
   if (searchMode.value === 'list') {
     if (!hasSearchContent.value) {
       return []
     }
-    allListModeResults.value.forEach((item: any) => {
-      sections.push({ type: 'listItem', items: [item] })
-    })
-    return sections
+    return allListModeResults.value.map((item: any) => ({ type: 'listItem', items: [item] }))
   }
 
-  // 聚合模式
-  if (hasSearchContent.value) {
-    // 有搜索：最佳搜索结果 + 最佳匹配 + 匹配推荐 + 窗口匹配
-    if (bestSearchResults.value.length > 0) {
-      const visibleItems = getVisibleItems(
-        bestSearchResults.value,
-        isSearchResultsExpanded.value,
-        2
-      )
-      const searchGrid = arrayToGrid(visibleItems)
-      searchGrid.forEach((row) => {
-        sections.push({ type: 'bestSearch', items: row })
-      })
-    }
-
-    if (bestMatches.value.length > 0) {
-      const visibleItems = getVisibleItems(bestMatches.value, isBestMatchesExpanded.value, 2)
-      const matchGrid = arrayToGrid(visibleItems)
-      matchGrid.forEach((row) => {
-        sections.push({ type: 'bestMatch', items: row })
-      })
-    }
-
-    if (recommendations.value.length > 0) {
-      const visibleItems = getVisibleItems(
-        recommendations.value,
-        isRecommendationsExpanded.value,
-        2
-      )
-      const recommendGrid = arrayToGrid(visibleItems)
-      recommendGrid.forEach((row) => {
-        sections.push({ type: 'recommendation', items: row })
-      })
-    }
-
-    // 窗口匹配结果（在有搜索内容时也显示）
-    if (windowMatchedActions.value.length > 0) {
-      const windowGrid = arrayToGrid(windowMatchedActions.value)
-      windowGrid.forEach((row) => {
-        sections.push({ type: 'window', items: row })
-      })
-    }
-
-    // mainPush 结果放到最后（每个 group 的每个 item 占一行）
-    for (const group of mainPushGroups.value) {
-      const sectionType = `mainPush:${group.featureKey}`
-      for (const item of group.items) {
-        sections.push({ type: sectionType, items: [item], mainPushGroup: group })
-      }
-    }
-  } else {
-    // 无搜索：最近使用 + 固定栏 + 访达
-    if (displayApps.value.length > 0) {
-      const visibleItems = getVisibleItems(
-        displayApps.value,
-        isRecentExpanded.value,
-        windowStore.recentRows
-      )
-      const appsGrid = arrayToGrid(visibleItems)
-      appsGrid.forEach((row) => {
-        sections.push({ type: 'apps', items: row })
-      })
-    }
-
-    if (pinnedApps.value.length > 0) {
-      const visibleItems = getVisibleItems(
-        pinnedApps.value,
-        isPinnedExpanded.value,
-        windowStore.pinnedRows
-      )
-      const pinnedGrid = arrayToGrid(visibleItems)
-      pinnedGrid.forEach((row) => {
-        sections.push({ type: 'pinned', items: row })
-      })
-    }
-
-    if (windowMatchedActions.value.length > 0) {
-      const windowGrid = arrayToGrid(windowMatchedActions.value)
-      windowGrid.forEach((row) => {
-        sections.push({ type: 'window', items: row })
-      })
-    }
-  }
-
-  return sections
+  return buildAggregateNavigationGrid({
+    hasSearchContent: hasSearchContent.value,
+    bestSearchResults: bestSearchResults.value,
+    bestMatches: bestMatches.value,
+    recommendations: recommendations.value,
+    mainPushGroups: mainPushGroups.value,
+    windowMatchedActions: windowMatchedActions.value,
+    displayApps: displayApps.value,
+    pinnedApps: pinnedApps.value,
+    showRecentInSearch: showRecentInSearch.value,
+    recentExpanded: isRecentExpanded.value,
+    pinnedExpanded: isPinnedExpanded.value,
+    searchResultsExpanded: isSearchResultsExpanded.value,
+    bestMatchesExpanded: isBestMatchesExpanded.value,
+    recommendationsExpanded: isRecommendationsExpanded.value,
+    recentRows: windowStore.recentRows,
+    pinnedRows: windowStore.pinnedRows
+  })
 })
 
 // 使用导航 composable
