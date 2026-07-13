@@ -277,6 +277,10 @@ class APIManager {
     return databaseAPI.dbGet(key)
   }
 
+  public dbRemove(key: string): any {
+    return databaseAPI.dbRemove(key)
+  }
+
   /**
    * 启动插件（供其他模块使用）
    */

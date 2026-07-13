@@ -30,6 +30,28 @@ _uTools 的开源实现 | 支持 macOS 和 Windows_
 - 🛠️ **开发友好** - 完整的 TypeScript 类型支持，热重载开发
 - ⚙️ **最新技术栈** - Electron 41 + Node 24.15 + Chrome 146
 
+## ❤️ 赞助商
+
+> [想出现在这里？](mailto:8589561@qq.com)
+
+<details open>
+<summary>点击折叠</summary>
+
+<table>
+  <tr>
+    <td width="240" align="center">
+      <a href="https://ztest.ai">
+        <img src="./.github/assets/sponsors/ztest.png" alt="真测 Ztest" width="220">
+      </a>
+    </td>
+    <td>
+      感谢 <a href="https://ztest.ai">真测 Ztest</a> 赞助了本项目！真测 ztest.ai 是一个 AI 中转站模型检测平台，检测结果数据全公开，23 项探针覆盖协议、身份、能力、内容完整性、安全性、性能六大维度，交叉印证识别伪造与降级。作为独立第三方验证平台，实时监测 AI 中转站的模型真实性、响应质量与服务可用性。
+    </td>
+  </tr>
+</table>
+
+</details>
+
 ## 📸 预览
 
 <div align="center">

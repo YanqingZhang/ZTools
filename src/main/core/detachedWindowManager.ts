@@ -73,7 +73,7 @@ class DetachedWindowManager {
         return
       }
 
-      const existing = databaseAPI.dbGet('detachedWindowSizes') || {}
+      const existing = databaseAPI.dbGet('detached-window-sizes') || {}
       const next = {
         ...(typeof existing === 'object' && existing !== null ? existing : {}),
         [sizeKey]: {
@@ -82,7 +82,7 @@ class DetachedWindowManager {
         }
       }
 
-      databaseAPI.dbPut('detachedWindowSizes', next)
+      databaseAPI.dbPut('detached-window-sizes', next)
       this.lastSavedSizeByPlugin.set(sizeKey, {
         width: normalizedWidth,
         height: normalizedHeight

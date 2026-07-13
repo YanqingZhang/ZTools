@@ -409,8 +409,8 @@ async function showPluginSettings(): Promise<void> {
     console.log('当前插件名称:', pluginName.value)
 
     // 读取当前插件的配置状态
-    const outKillPluginData = await window.ztools.dbGet('outKillPlugin')
-    const autoDetachPluginData = await window.ztools.dbGet('autoDetachPlugin')
+    const outKillPluginData = await window.ztools.dbGet('out-kill-plugin')
+    const autoDetachPluginData = await window.ztools.dbGet('auto-detach-plugin')
 
     console.log('读取到的配置数据:', { outKillPluginData, autoDetachPluginData })
 
@@ -459,7 +459,7 @@ async function showPluginSettings(): Promise<void> {
       const updatedList = outKillPluginList.includes(currentName)
         ? outKillPluginList.filter((n) => n !== currentName)
         : [...outKillPluginList, currentName]
-      await window.ztools.dbPut('outKillPlugin', updatedList)
+      await window.ztools.dbPut('out-kill-plugin', updatedList)
       console.log('已更新“退出到后台立即结束运行”配置:', updatedList)
     } else if (result?.id === 'toggle-auto-detach') {
       // 切换“自动分离为独立窗口”
@@ -469,7 +469,7 @@ async function showPluginSettings(): Promise<void> {
       const updatedList = autoDetachPluginList.includes(currentName)
         ? autoDetachPluginList.filter((n) => n !== currentName)
         : [...autoDetachPluginList, currentName]
-      await window.ztools.dbPut('autoDetachPlugin', updatedList)
+      await window.ztools.dbPut('auto-detach-plugin', updatedList)
       console.log('已更新"自动分离为独立窗口"配置:', updatedList)
     }
   } catch (error) {

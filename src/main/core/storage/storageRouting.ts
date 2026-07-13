@@ -1,5 +1,7 @@
 export type StorageScope = 'device' | 'account' | 'both'
 
+import { HOST_STORAGE_KEYS, toHostDocId } from '../../../shared/storageKeys'
+
 export const ACCOUNT_SYNC_PREFIXES = [
   'ZTOOLS/user-settings',
   'ZTOOLS/ai-models',
@@ -20,7 +22,13 @@ const DEVICE_EXACT_KEYS = new Set([
   'ZTOOLS/settings-general',
   'ZTOOLS/plugins',
   'ZTOOLS/disabled-plugins',
-  'ZTOOLS/plugin-order',
+  toHostDocId(HOST_STORAGE_KEYS.pluginOrder),
+  toHostDocId(HOST_STORAGE_KEYS.pluginCenterPinned),
+  toHostDocId(HOST_STORAGE_KEYS.autoStartPlugin),
+  toHostDocId(HOST_STORAGE_KEYS.autoDetachPlugin),
+  toHostDocId(HOST_STORAGE_KEYS.outKillPlugin),
+  toHostDocId(HOST_STORAGE_KEYS.enabledMainPushPlugin),
+  toHostDocId(HOST_STORAGE_KEYS.detachedWindowSizes),
   'ZTOOLS/plugin-market-cache',
   'ZTOOLS/development-projects',
   'SYNC/accounts',

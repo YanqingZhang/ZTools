@@ -253,6 +253,86 @@ describe('ZTools 3.0 legacy import', () => {
     legacyCheckDb.close()
     manager.close()
   })
+
+  it('imports the full user-data set and renames legacy camel-case keys', () => {
+    const homeDir = makeTempRoot()
+    const legacyUserDataPath = path.join(homeDir, 'legacy-user-data')
+    const legacyLmdbPath = path.join(legacyUserDataPath, 'lmdb')
+    fs.mkdirSync(legacyLmdbPath, { recursive: true })
+
+    const legacyDb = new LmdbDatabase({
+      path: legacyLmdbPath,
+      mapSize: 128 * 1024 * 1024,
+      maxDbs: 6
+    })
+    legacyDb.put({
+      _id: 'ZTOOLS/plugins',
+      data: [{ name: 'enabled-plugin' }, { name: 'blocked-plugin' }]
+    })
+    legacyDb.put({ _id: 'ZTOOLS/pinned-commands', data: [{ name: 'Pinned' }] })
+    legacyDb.put({ _id: 'ZTOOLS/command-history', data: [{ name: 'Recent' }] })
+    legacyDb.put({ _id: 'ZTOOLS/autoStartPlugin', data: ['enabled-plugin'] })
+    legacyDb.put({ _id: 'ZTOOLS/autoDetachPlugin', data: ['enabled-plugin'] })
+    legacyDb.put({ _id: 'ZTOOLS/outKillPlugin', data: ['enabled-plugin'] })
+    legacyDb.put({ _id: 'ZTOOLS/disabledMainPushPlugin', data: ['blocked-plugin'] })
+    legacyDb.put({
+      _id: 'ZTOOLS/detachedWindowSizes',
+      data: { 'enabled-plugin': { width: 600, height: 400 } }
+    })
+    legacyDb.put({ _id: 'ZTOOLS/settings-mcp-disabled-plugins', data: ['/plugin/path'] })
+    legacyDb.put({ _id: 'ZTOOLS/plugin-market-data', data: ['cache'] })
+    legacyDb.close()
+
+    const manager = new StorageManager({ homeDir, legacyUserDataPath, mapSize: 128 * 1024 * 1024 })
+    const service = new LegacyImportService(manager, { homeDir, legacyUserDataPath })
+    const result = service.importSelected({ mode: 'full' })
+
+    expect(result.mode).toBe('full')
+    expect(manager.getDeviceDb().get('ZTOOLS/pinned-commands')?.data).toEqual([{ name: 'Pinned' }])
+    expect(manager.getDeviceDb().get('ZTOOLS/command-history')?.data).toEqual([{ name: 'Recent' }])
+    expect(manager.getDeviceDb().get('ZTOOLS/auto-start-plugin')?.data).toEqual(['enabled-plugin'])
+    expect(manager.getDeviceDb().get('ZTOOLS/auto-detach-plugin')?.data).toEqual(['enabled-plugin'])
+    expect(manager.getDeviceDb().get('ZTOOLS/out-kill-plugin')?.data).toEqual(['enabled-plugin'])
+    expect(manager.getDeviceDb().get('ZTOOLS/enabled-main-push-plugin')?.data).toEqual([
+      'enabled-plugin'
+    ])
+    expect(manager.getDeviceDb().get('ZTOOLS/detached-window-sizes')?.data).toEqual({
+      'enabled-plugin': { width: 600, height: 400 }
+    })
+    expect(manager.getDeviceDb().get('ZTOOLS/settings-mcp-disabled-plugins')?.data).toEqual([
+      '/plugin/path'
+    ])
+    expect(manager.getDeviceDb().get('ZTOOLS/autoStartPlugin')).toBeNull()
+    expect(manager.getDeviceDb().get('ZTOOLS/plugin-market-data')).toBeNull()
+    manager.close()
+  })
+
+  it('keeps the compact import limited to the original data set', () => {
+    const homeDir = makeTempRoot()
+    const legacyUserDataPath = path.join(homeDir, 'legacy-user-data')
+    const legacyLmdbPath = path.join(legacyUserDataPath, 'lmdb')
+    fs.mkdirSync(legacyLmdbPath, { recursive: true })
+
+    const legacyDb = new LmdbDatabase({
+      path: legacyLmdbPath,
+      mapSize: 128 * 1024 * 1024,
+      maxDbs: 6
+    })
+    legacyDb.put({ _id: 'ZTOOLS/settings-general', data: { theme: 'dark' } })
+    legacyDb.put({ _id: 'ZTOOLS/pinned-commands', data: [{ name: 'Skipped' }] })
+    legacyDb.put({ _id: 'ZTOOLS/autoStartPlugin', data: ['skipped-plugin'] })
+    legacyDb.close()
+
+    const manager = new StorageManager({ homeDir, legacyUserDataPath, mapSize: 128 * 1024 * 1024 })
+    const service = new LegacyImportService(manager, { homeDir, legacyUserDataPath })
+    const result = service.importSelected({ mode: 'compact' })
+
+    expect(result.mode).toBe('compact')
+    expect(manager.getDeviceDb().get('ZTOOLS/settings-general')?.data.theme).toBe('dark')
+    expect(manager.getDeviceDb().get('ZTOOLS/pinned-commands')).toBeNull()
+    expect(manager.getDeviceDb().get('ZTOOLS/auto-start-plugin')).toBeNull()
+    manager.close()
+  })
 })
 
 describe('ZTools 3.0 default account import after login', () => {

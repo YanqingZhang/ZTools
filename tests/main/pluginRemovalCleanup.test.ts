@@ -257,13 +257,13 @@ describe('plugin removal cleanup', () => {
       if (key === 'plugins') {
         return [{ name: 'demo', path: 'D:\\plugins\\demo', isDevelopment: false }]
       }
-      if (key === 'outKillPlugin') {
+      if (key === 'out-kill-plugin') {
         return ['demo', 'other']
       }
-      if (key === 'autoDetachPlugin') {
+      if (key === 'auto-detach-plugin') {
         return ['demo']
       }
-      if (key === 'autoStartPlugin') {
+      if (key === 'auto-start-plugin') {
         return [{ pluginName: 'demo' }, { pluginName: 'other' }]
       }
       if (key === ENABLED_MAIN_PUSH_PLUGINS_KEY) {
@@ -284,9 +284,9 @@ describe('plugin removal cleanup', () => {
     const result = await api.deletePlugin('D:\\plugins\\demo', { deleteData: true })
 
     expect(result).toEqual({ success: true })
-    expect(mockDbPut).toHaveBeenCalledWith('outKillPlugin', ['other'])
-    expect(mockDbPut).toHaveBeenCalledWith('autoDetachPlugin', [])
-    expect(mockDbPut).toHaveBeenCalledWith('autoStartPlugin', ['other'])
+    expect(mockDbPut).toHaveBeenCalledWith('out-kill-plugin', ['other'])
+    expect(mockDbPut).toHaveBeenCalledWith('auto-detach-plugin', [])
+    expect(mockDbPut).toHaveBeenCalledWith('auto-start-plugin', ['other'])
     expect(mockDbPut).toHaveBeenCalledWith(ENABLED_MAIN_PUSH_PLUGINS_KEY, ['other'])
   })
 

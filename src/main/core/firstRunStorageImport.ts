@@ -2,7 +2,7 @@ import { is } from '@electron-toolkit/utils'
 import { BrowserWindow, dialog, ipcMain, screen } from 'electron'
 import { getPreloadPath, getRendererPath } from '../utils/appBundlePath'
 import { applyWindowMaterial, getDefaultWindowMaterial } from '../utils/windowUtils'
-import { legacyImportService } from './storage/legacyImportService'
+import { legacyImportService, type LegacyImportMode } from './storage/legacyImportService'
 import { storageManager } from './storage/storageManager'
 
 let legacyImportWindowActive = false
@@ -22,7 +22,7 @@ export async function handleFirstRunStorageImport(): Promise<void> {
       type: 'info',
       title: '旧数据导入完成',
       message: '旧数据导入完成',
-      detail: `已导入 ${result.imported.importedDocs} 条数据库记录、${result.imported.importedAttachments} 个附件，复制 ${result.imported.copiedDirs.length} 个数据目录，跳过 ${result.imported.skippedDocs} 条记录、${result.imported.skippedAttachments} 个附件。旧目录已保留不变。`,
+      detail: `迁移模式：${result.imported.mode === 'full' ? '完整迁移' : '精简迁移'}。已导入 ${result.imported.importedDocs} 条数据库记录、${result.imported.importedAttachments} 个附件，复制 ${result.imported.copiedDirs.length} 个数据目录，跳过 ${result.imported.skippedDocs} 条记录、${result.imported.skippedAttachments} 个附件。旧目录已保留不变。`,
       buttons: ['确定'],
       noLink: true
     })
@@ -53,8 +53,8 @@ type LegacyImportWindowResult =
 function showLegacyImportWindow(): Promise<LegacyImportWindowResult> {
   legacyImportWindowActive = true
 
-  const width = 500
-  const height = 320
+  const width = 600
+  const height = 590
   const { workArea } = screen.getPrimaryDisplay()
   const x = Math.round(workArea.x + (workArea.width - width) / 2)
   const y = Math.round(workArea.y + (workArea.height - height) / 2)
@@ -117,21 +117,19 @@ function showLegacyImportWindow(): Promise<LegacyImportWindowResult> {
       }
     }
 
-    const handleChoice = (event: Electron.IpcMainEvent, action: 'import' | 'fresh'): void => {
+    const handleChoice = (
+      event: Electron.IpcMainEvent,
+      choice: { action: 'import' | 'fresh'; mode?: LegacyImportMode }
+    ): void => {
       if (event.sender !== importWindow.webContents) return
-      if (action !== 'import') {
+      if (choice?.action !== 'import') {
         finish({ action: 'fresh' })
         return
       }
 
       try {
         const imported = legacyImportService.importSelected({
-          baseSettings: true,
-          pluginInstallState: true,
-          pluginOrder: true,
-          pluginData: true,
-          aiModels: true,
-          legacySyncConfig: false
+          mode: choice.mode === 'compact' ? 'compact' : 'full'
         })
         finish({ action: 'import', imported })
       } catch (error: unknown) {

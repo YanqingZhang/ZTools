@@ -431,6 +431,15 @@ export class DatabaseAPI {
     }
   }
 
+  public dbRemove(key: string): any {
+    try {
+      return lmdbInstance.remove(`ZTOOLS/${key}`)
+    } catch (error) {
+      console.error('[Database] dbRemove 失败:', key, error)
+      throw error
+    }
+  }
+
   /**
    * 计算字典序的下一个前缀（用于精确的范围查询）
    * 例如：prefix = "PLUGIN/test/" -> end = "PLUGIN/test0"

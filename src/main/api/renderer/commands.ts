@@ -332,7 +332,7 @@ export class AppsAPI {
     let shouldAutoDetach = false
     if (pluginConfig && effectiveName) {
       try {
-        const autoDetachPlugins: string[] = databaseAPI.dbGet('autoDetachPlugin') || []
+        const autoDetachPlugins: string[] = databaseAPI.dbGet('auto-detach-plugin') || []
         if (Array.isArray(autoDetachPlugins) && autoDetachPlugins.includes(effectiveName)) {
           shouldAutoDetach = true
           console.log(`插件 ${effectiveName} 配置为自动分离，直接在独立窗口中创建`)

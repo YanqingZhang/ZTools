@@ -162,6 +162,7 @@ const hotkeyPresets = computed(() => {
 })
 
 const showHotkeyQuickActions = ref(false)
+const settingsLoaded = ref(false)
 
 // 本地状态（替代 windowStore）
 const theme = ref<ThemeType>('system')
@@ -1328,11 +1329,20 @@ async function saveSettings(): Promise<void> {
   }
 }
 
+async function initializeSettings(): Promise<void> {
+  try {
+    // 平台会影响快捷键默认值和平台专属选项，需在设置表单展示前确定。
+    await getPlatformInfo()
+    await loadSettings()
+  } finally {
+    settingsLoaded.value = true
+  }
+}
+
 // 初始化时加载设置
 onMounted(() => {
-  loadSettings()
-  getPlatformInfo()
   document.addEventListener('click', handleQuickActionsClickOutside)
+  void initializeSettings()
 })
 
 onUnmounted(() => {
@@ -1341,7 +1351,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="content-panel">
+  <div v-if="settingsLoaded" class="content-panel">
     <!-- ==================== 基础 ==================== -->
     <div class="setting-group">
       <h3 class="setting-group-title">基础</h3>
@@ -2289,6 +2299,7 @@ onUnmounted(() => {
       </div>
     </div>
   </div>
+  <div v-else class="content-panel" aria-busy="true"></div>
 </template>
 
 <style scoped>

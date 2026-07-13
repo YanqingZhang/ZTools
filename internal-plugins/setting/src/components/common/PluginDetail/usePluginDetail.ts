@@ -76,7 +76,7 @@ export function usePluginDetail(options: UsePluginDetailOptions) {
     if (!plugin.value.name) return
 
     try {
-      const killData = await window.ztools.internal.dbGet('outKillPlugin')
+      const killData = await window.ztools.internal.dbGet('out-kill-plugin')
       if (Array.isArray(killData) && currentPluginName.value) {
         isAutoKill.value = normalizeConfigList(killData).includes(currentPluginName.value)
       }
@@ -85,7 +85,7 @@ export function usePluginDetail(options: UsePluginDetailOptions) {
     }
 
     try {
-      const detachData = await window.ztools.internal.dbGet('autoDetachPlugin')
+      const detachData = await window.ztools.internal.dbGet('auto-detach-plugin')
       if (Array.isArray(detachData) && currentPluginName.value) {
         isAutoDetach.value = normalizeConfigList(detachData).includes(currentPluginName.value)
       }
@@ -94,7 +94,7 @@ export function usePluginDetail(options: UsePluginDetailOptions) {
     }
 
     try {
-      const startData = await window.ztools.internal.dbGet('autoStartPlugin')
+      const startData = await window.ztools.internal.dbGet('auto-start-plugin')
       if (Array.isArray(startData) && currentPluginName.value) {
         isAutoStart.value = normalizeConfigList(startData).includes(currentPluginName.value)
       }
@@ -121,14 +121,14 @@ export function usePluginDetail(options: UsePluginDetailOptions) {
 
     let list: string[] = []
     try {
-      const data = await window.ztools.internal.dbGet('outKillPlugin')
+      const data = await window.ztools.internal.dbGet('out-kill-plugin')
       list = normalizeConfigList(data)
     } catch {
       // ignore
     }
 
     list = toggleInList(list, currentPluginName.value)
-    await window.ztools.internal.dbPut('outKillPlugin', list)
+    await window.ztools.internal.dbPut('out-kill-plugin', list)
     isAutoKill.value = list.includes(currentPluginName.value)
   }
 
@@ -138,14 +138,14 @@ export function usePluginDetail(options: UsePluginDetailOptions) {
 
     let list: string[] = []
     try {
-      const data = await window.ztools.internal.dbGet('autoDetachPlugin')
+      const data = await window.ztools.internal.dbGet('auto-detach-plugin')
       list = normalizeConfigList(data)
     } catch {
       // ignore
     }
 
     list = toggleInList(list, currentPluginName.value)
-    await window.ztools.internal.dbPut('autoDetachPlugin', list)
+    await window.ztools.internal.dbPut('auto-detach-plugin', list)
     isAutoDetach.value = list.includes(currentPluginName.value)
   }
 
@@ -155,14 +155,14 @@ export function usePluginDetail(options: UsePluginDetailOptions) {
 
     let list: string[] = []
     try {
-      const data = await window.ztools.internal.dbGet('autoStartPlugin')
+      const data = await window.ztools.internal.dbGet('auto-start-plugin')
       list = normalizeConfigList(data)
     } catch {
       // ignore
     }
 
     list = toggleInList(list, currentPluginName.value)
-    await window.ztools.internal.dbPut('autoStartPlugin', list)
+    await window.ztools.internal.dbPut('auto-start-plugin', list)
     isAutoStart.value = list.includes(currentPluginName.value)
   }
 

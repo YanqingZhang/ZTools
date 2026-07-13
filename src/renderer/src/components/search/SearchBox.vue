@@ -281,7 +281,7 @@ function getCurrentPluginName(): string | null {
  * 切换当前插件在指定行为设置中的选中状态。
  */
 async function toggleCurrentPluginVariantSetting(
-  key: 'outKillPlugin' | 'autoDetachPlugin' | 'autoStartPlugin'
+  key: 'out-kill-plugin' | 'auto-detach-plugin' | 'auto-start-plugin'
 ): Promise<void> {
   const currentPluginName = getCurrentPluginName()
   if (!currentPluginName) {
@@ -888,21 +888,21 @@ onMounted(() => {
       }
     } else if (command === 'toggle-auto-kill') {
       try {
-        await toggleCurrentPluginVariantSetting('outKillPlugin')
+        await toggleCurrentPluginVariantSetting('out-kill-plugin')
       } catch (error: any) {
         console.error('切换自动结束配置失败:', error)
         alert(`操作失败: ${error.message || '未知错误'}`)
       }
     } else if (command === 'toggle-auto-detach') {
       try {
-        await toggleCurrentPluginVariantSetting('autoDetachPlugin')
+        await toggleCurrentPluginVariantSetting('auto-detach-plugin')
       } catch (error: any) {
         console.error('切换自动分离配置失败:', error)
         alert(`操作失败: ${error.message || '未知错误'}`)
       }
     } else if (command === 'toggle-auto-start') {
       try {
-        await toggleCurrentPluginVariantSetting('autoStartPlugin')
+        await toggleCurrentPluginVariantSetting('auto-start-plugin')
       } catch (error: any) {
         console.error('切换跟随启动配置失败:', error)
         alert(`操作失败: ${error.message || '未知错误'}`)
@@ -947,11 +947,11 @@ async function handleSettingsClick(): Promise<void> {
     let autoDetachPlugins: string[] = []
     let autoStartPlugins: string[] = []
     try {
-      const killData = await window.ztools.dbGet('outKillPlugin')
+      const killData = await window.ztools.dbGet('out-kill-plugin')
       outKillPlugins = normalizeConfigList(killData)
-      const detachData = await window.ztools.dbGet('autoDetachPlugin')
+      const detachData = await window.ztools.dbGet('auto-detach-plugin')
       autoDetachPlugins = normalizeConfigList(detachData)
-      const startData = await window.ztools.dbGet('autoStartPlugin')
+      const startData = await window.ztools.dbGet('auto-start-plugin')
       autoStartPlugins = normalizeConfigList(startData)
     } catch (error) {
       console.log('读取配置失败（可能不存在）:', error)

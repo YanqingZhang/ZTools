@@ -503,9 +503,9 @@ async function handleAppContextMenu(
     let outKillPlugins: string[] = []
     let autoDetachPlugins: string[] = []
     try {
-      const killData = await window.ztools.dbGet('outKillPlugin')
+      const killData = await window.ztools.dbGet('out-kill-plugin')
       outKillPlugins = normalizeConfigList(killData)
-      const detachData = await window.ztools.dbGet('autoDetachPlugin')
+      const detachData = await window.ztools.dbGet('auto-detach-plugin')
       autoDetachPlugins = normalizeConfigList(detachData)
     } catch (error) {
       console.log('读取配置失败:', error)
@@ -810,7 +810,7 @@ async function handleContextMenuCommand(command: string): Promise<void> {
     try {
       let outKillPlugins: string[] = []
       try {
-        const data = await window.ztools.dbGet('outKillPlugin')
+        const data = await window.ztools.dbGet('out-kill-plugin')
         outKillPlugins = normalizeConfigList(data)
       } catch (error) {
         console.debug('未找outKillPlugin配置', error)
@@ -824,7 +824,7 @@ async function handleContextMenuCommand(command: string): Promise<void> {
       outKillPlugins = outKillPlugins.includes(pluginName)
         ? outKillPlugins.filter((n) => n !== pluginName)
         : [...outKillPlugins, pluginName]
-      await window.ztools.dbPut('outKillPlugin', outKillPlugins)
+      await window.ztools.dbPut('out-kill-plugin', outKillPlugins)
       console.log('已更新 outKillPlugin 配置:', outKillPlugins)
     } catch (error: any) {
       console.error('切换自动结束配置失败:', error)
@@ -862,7 +862,7 @@ async function handleContextMenuCommand(command: string): Promise<void> {
     try {
       let autoDetachPlugins: string[] = []
       try {
-        const data = await window.ztools.dbGet('autoDetachPlugin')
+        const data = await window.ztools.dbGet('auto-detach-plugin')
         autoDetachPlugins = normalizeConfigList(data)
       } catch (error) {
         console.debug('未找到 autoDetachPlugin 配置', error)
@@ -876,7 +876,7 @@ async function handleContextMenuCommand(command: string): Promise<void> {
       autoDetachPlugins = autoDetachPlugins.includes(pluginName)
         ? autoDetachPlugins.filter((n) => n !== pluginName)
         : [...autoDetachPlugins, pluginName]
-      await window.ztools.dbPut('autoDetachPlugin', autoDetachPlugins)
+      await window.ztools.dbPut('auto-detach-plugin', autoDetachPlugins)
       console.log('已更新 autoDetachPlugin 配置:', autoDetachPlugins)
     } catch (error: any) {
       console.error('切换自动分离配置失败:', error)

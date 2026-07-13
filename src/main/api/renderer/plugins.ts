@@ -27,9 +27,9 @@ import {
 // 插件目录
 const DISABLED_PLUGINS_KEY = 'disabled-plugins'
 const PLUGIN_NAME_SETTING_KEYS = [
-  'outKillPlugin',
-  'autoDetachPlugin',
-  'autoStartPlugin',
+  'out-kill-plugin',
+  'auto-detach-plugin',
+  'auto-start-plugin',
   ENABLED_MAIN_PUSH_PLUGINS_KEY
 ]
 

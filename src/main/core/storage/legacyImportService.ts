@@ -10,6 +10,13 @@ import {
 import { readDataVersion, writeDataVersion } from '../appData/appDataVersion'
 import { getStorageScopeForKey } from './storageRouting'
 import { storageManager, type StorageManager } from './storageManager'
+import {
+  HOST_STORAGE_KEYS,
+  LEGACY_CAMEL_CASE_STORAGE_KEYS,
+  toHostDocId
+} from '../../../shared/storageKeys'
+
+export type LegacyImportMode = 'full' | 'compact'
 
 export interface LegacyImportDetection {
   initialized: boolean
@@ -19,6 +26,7 @@ export interface LegacyImportDetection {
 }
 
 export interface LegacyImportOptions {
+  mode?: LegacyImportMode
   baseSettings?: boolean
   pluginInstallState?: boolean
   pluginOrder?: boolean
@@ -28,6 +36,7 @@ export interface LegacyImportOptions {
 }
 
 export interface LegacyImportResult {
+  mode: LegacyImportMode
   importedDocs: number
   skippedDocs: number
   importedAttachments: number
@@ -35,11 +44,41 @@ export interface LegacyImportResult {
   copiedDirs: string[]
 }
 
-const BASE_SETTING_KEYS = new Set(['ZTOOLS/settings-general'])
-const PLUGIN_INSTALL_KEYS = new Set(['ZTOOLS/plugins', 'ZTOOLS/disabled-plugins'])
-const PLUGIN_ORDER_KEYS = new Set(['ZTOOLS/plugin-order'])
-const AI_MODEL_KEYS = new Set(['ZTOOLS/ai-models'])
+const BASE_SETTING_KEYS = new Set([toHostDocId(HOST_STORAGE_KEYS.settingsGeneral)])
+const PLUGIN_INSTALL_KEYS = new Set([
+  toHostDocId(HOST_STORAGE_KEYS.plugins),
+  toHostDocId(HOST_STORAGE_KEYS.disabledPlugins)
+])
+const PLUGIN_ORDER_KEYS = new Set([toHostDocId(HOST_STORAGE_KEYS.pluginOrder)])
+const AI_MODEL_KEYS = new Set([toHostDocId(HOST_STORAGE_KEYS.aiModels)])
 const LEGACY_SYNC_KEYS = new Set(['SYNC/config'])
+
+const FULL_IMPORT_KEY_MAP = new Map<string, string>(
+  [
+    [HOST_STORAGE_KEYS.pinnedCommands, HOST_STORAGE_KEYS.pinnedCommands],
+    [HOST_STORAGE_KEYS.superPanelPinned, HOST_STORAGE_KEYS.superPanelPinned],
+    [HOST_STORAGE_KEYS.localShortcuts, HOST_STORAGE_KEYS.localShortcuts],
+    [HOST_STORAGE_KEYS.globalShortcuts, HOST_STORAGE_KEYS.globalShortcuts],
+    [HOST_STORAGE_KEYS.appShortcuts, HOST_STORAGE_KEYS.appShortcuts],
+    [HOST_STORAGE_KEYS.commandAliases, HOST_STORAGE_KEYS.commandAliases],
+    [HOST_STORAGE_KEYS.disabledCommands, HOST_STORAGE_KEYS.disabledCommands],
+    [HOST_STORAGE_KEYS.pluginCenterPinned, HOST_STORAGE_KEYS.pluginCenterPinned],
+    [HOST_STORAGE_KEYS.commandHistory, HOST_STORAGE_KEYS.commandHistory],
+    [HOST_STORAGE_KEYS.commandUsageStats, HOST_STORAGE_KEYS.commandUsageStats],
+    [HOST_STORAGE_KEYS.searchPreference, HOST_STORAGE_KEYS.searchPreference],
+    [HOST_STORAGE_KEYS.lastMatchState, HOST_STORAGE_KEYS.lastMatchState],
+    [LEGACY_CAMEL_CASE_STORAGE_KEYS.autoStartPlugin, HOST_STORAGE_KEYS.autoStartPlugin],
+    [LEGACY_CAMEL_CASE_STORAGE_KEYS.autoDetachPlugin, HOST_STORAGE_KEYS.autoDetachPlugin],
+    [LEGACY_CAMEL_CASE_STORAGE_KEYS.outKillPlugin, HOST_STORAGE_KEYS.outKillPlugin],
+    [
+      LEGACY_CAMEL_CASE_STORAGE_KEYS.disabledMainPushPlugin,
+      HOST_STORAGE_KEYS.enabledMainPushPlugin
+    ],
+    [LEGACY_CAMEL_CASE_STORAGE_KEYS.detachedWindowSizes, HOST_STORAGE_KEYS.detachedWindowSizes],
+    [HOST_STORAGE_KEYS.devPluginRegistry, HOST_STORAGE_KEYS.devPluginRegistry],
+    [HOST_STORAGE_KEYS.mcpDisabledPlugins, HOST_STORAGE_KEYS.mcpDisabledPlugins]
+  ].map(([source, target]) => [toHostDocId(source), toHostDocId(target)])
+)
 
 export class LegacyImportService {
   constructor(
@@ -65,10 +104,12 @@ export class LegacyImportService {
   }
 
   importSelected(options: LegacyImportOptions): LegacyImportResult {
+    const mode = options.mode || 'compact'
     const layout = ensure3Layout(this.pathOptions)
     if (!fs.existsSync(layout.legacyLmdbPath)) {
       const copiedDirs = copyLegacyDataDirs(layout)
       return {
+        mode,
         importedDocs: 0,
         skippedDocs: 0,
         importedAttachments: 0,
@@ -91,30 +132,34 @@ export class LegacyImportService {
 
     try {
       const docs = legacyDb.allDocs()
+      const docsById = new Map(docs.map((doc) => [doc._id, doc]))
       for (const doc of docs) {
-        if (!shouldImportDoc(doc._id, options)) {
+        const targetDocId = getImportTargetDocId(doc._id, options)
+        if (!targetDocId) {
           skippedDocs++
           continue
         }
         const targetDb =
-          getStorageScopeForKey(doc._id) === 'device'
+          getStorageScopeForKey(targetDocId) === 'device'
             ? this.manager.getDeviceDb()
             : this.manager.getAccountDb()
-        const existing = targetDb.get(doc._id)
-        targetDb.put({ ...sanitizeLegacyDocForImport(doc, layout), _rev: existing?._rev })
+        const existing = targetDb.get(targetDocId)
+        const importedDoc = sanitizeLegacyDocForImport(doc, layout, targetDocId, docsById)
+        targetDb.put({ ...importedDoc, _rev: existing?._rev })
         importedDocs++
       }
 
       for (const item of legacyDb.listAttachments()) {
-        if (!shouldImportDoc(item.docId, options)) {
+        const targetDocId = getImportTargetDocId(item.docId, options)
+        if (!targetDocId) {
           skippedAttachments++
           continue
         }
         const targetDb =
-          getStorageScopeForKey(item.docId) === 'device'
+          getStorageScopeForKey(targetDocId) === 'device'
             ? this.manager.getDeviceDb()
             : this.manager.getAccountDb()
-        if (targetDb.getAttachment(item.docId)) {
+        if (targetDb.getAttachment(targetDocId)) {
           skippedAttachments++
           continue
         }
@@ -125,7 +170,7 @@ export class LegacyImportService {
         }
         const meta = legacyDb.getAttachmentType(item.docId)
         const result = targetDb.postAttachment(
-          item.docId,
+          targetDocId,
           body,
           meta?.type || item.contentType || 'application/octet-stream'
         )
@@ -140,11 +185,16 @@ export class LegacyImportService {
     }
 
     writeDataVersion({ importedFromLegacy: true }, this.pathOptions)
-    return { importedDocs, skippedDocs, importedAttachments, skippedAttachments, copiedDirs }
+    return { mode, importedDocs, skippedDocs, importedAttachments, skippedAttachments, copiedDirs }
   }
 }
 
-function sanitizeLegacyDocForImport(doc: any, layout: ReturnType<typeof getZToolsDataLayout>): any {
+function sanitizeLegacyDocForImport(
+  doc: any,
+  layout: ReturnType<typeof getZToolsDataLayout>,
+  targetDocId: string,
+  docsById: Map<string, any>
+): any {
   const {
     _rev,
     _cloudSynced,
@@ -156,7 +206,21 @@ function sanitizeLegacyDocForImport(doc: any, layout: ReturnType<typeof getZTool
     ...cleanDoc
   } = doc || {}
 
-  const pathRewrittenDoc = rewriteLegacyPaths(cleanDoc, layout)
+  const pathRewrittenDoc = rewriteLegacyPaths({ ...cleanDoc, _id: targetDocId }, layout)
+
+  if (
+    doc?._id === toHostDocId(LEGACY_CAMEL_CASE_STORAGE_KEYS.disabledMainPushPlugin) &&
+    targetDocId === toHostDocId(HOST_STORAGE_KEYS.enabledMainPushPlugin)
+  ) {
+    const disabledNames = normalizePluginNames(pathRewrittenDoc.data)
+    const pluginsDoc = docsById.get(toHostDocId(HOST_STORAGE_KEYS.plugins))
+    const installedNames = Array.isArray(pluginsDoc?.data)
+      ? pluginsDoc.data
+          .map((plugin: any) => (typeof plugin?.name === 'string' ? plugin.name : ''))
+          .filter(Boolean)
+      : []
+    pathRewrittenDoc.data = installedNames.filter((name: string) => !disabledNames.includes(name))
+  }
 
   if (pathRewrittenDoc?._id !== 'SYNC/config') return pathRewrittenDoc
   const data = pathRewrittenDoc.data || {}
@@ -170,6 +234,15 @@ function sanitizeLegacyDocForImport(doc: any, layout: ReturnType<typeof getZTool
       username: ''
     }
   }
+}
+
+function normalizePluginNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item: any) =>
+      typeof item === 'string' ? item : typeof item?.pluginName === 'string' ? item.pluginName : ''
+    )
+    .filter(Boolean)
 }
 
 function copyLegacyDataDirs(layout: ReturnType<typeof getZToolsDataLayout>): string[] {
@@ -234,14 +307,24 @@ function rewriteLegacyPath(value: string, layout: ReturnType<typeof getZToolsDat
   return path.join(layout.root, path.relative(layout.legacyUserDataPath, value))
 }
 
-function shouldImportDoc(docId: string, options: LegacyImportOptions): boolean {
-  if (options.baseSettings && BASE_SETTING_KEYS.has(docId)) return true
-  if (options.pluginInstallState && PLUGIN_INSTALL_KEYS.has(docId)) return true
-  if (options.pluginOrder && PLUGIN_ORDER_KEYS.has(docId)) return true
-  if (options.pluginData && docId.startsWith('PLUGIN/')) return true
-  if (options.aiModels && AI_MODEL_KEYS.has(docId)) return true
-  if (options.legacySyncConfig && LEGACY_SYNC_KEYS.has(docId)) return true
-  return false
+function getImportTargetDocId(docId: string, options: LegacyImportOptions): string | null {
+  if (options.mode) {
+    if (BASE_SETTING_KEYS.has(docId)) return docId
+    if (PLUGIN_INSTALL_KEYS.has(docId)) return docId
+    if (PLUGIN_ORDER_KEYS.has(docId)) return docId
+    if (docId.startsWith('PLUGIN/')) return docId
+    if (AI_MODEL_KEYS.has(docId)) return docId
+    if (options.mode === 'full') return FULL_IMPORT_KEY_MAP.get(docId) || null
+    return null
+  }
+
+  if (options.baseSettings && BASE_SETTING_KEYS.has(docId)) return docId
+  if (options.pluginInstallState && PLUGIN_INSTALL_KEYS.has(docId)) return docId
+  if (options.pluginOrder && PLUGIN_ORDER_KEYS.has(docId)) return docId
+  if (options.pluginData && docId.startsWith('PLUGIN/')) return docId
+  if (options.aiModels && AI_MODEL_KEYS.has(docId)) return docId
+  if (options.legacySyncConfig && LEGACY_SYNC_KEYS.has(docId)) return docId
+  return null
 }
 
 export const legacyImportService = new LegacyImportService()

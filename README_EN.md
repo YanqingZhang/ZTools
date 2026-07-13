@@ -30,6 +30,28 @@ English | [简体中文](./README.md)
 - 🛠️ **Developer Friendly** - Complete TypeScript type support, hot reload development
 - ⚙️ **Modern Tech Stack** - Electron 41 + Node 24.15 + Chrome 146
 
+## ❤️ Sponsors
+
+> [Want to appear here?](mailto:8589561@qq.com)
+
+<details open>
+<summary>Click to collapse</summary>
+
+<table>
+  <tr>
+    <td width="240" align="center">
+      <a href="https://ztest.ai">
+        <img src="./.github/assets/sponsors/ztest.png" alt="Ztest" width="220">
+      </a>
+    </td>
+    <td>
+      Thanks to <a href="https://ztest.ai">Ztest</a> for sponsoring this project! Ztest.ai is a model verification platform for AI API relay services that makes all test result data publicly available. Its 23 probes cover six dimensions: protocol, identity, capability, content integrity, security, and performance. By cross-validating results, it identifies model spoofing and degradation. As an independent third-party verification platform, Ztest monitors the model authenticity, response quality, and service availability of AI API relay services in real time.
+    </td>
+  </tr>
+</table>
+
+</details>
+
 ## 📸 Preview
 
 <div align="center">

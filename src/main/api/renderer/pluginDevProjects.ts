@@ -249,9 +249,9 @@ export class PluginDevProjectsAPI {
       'history-changed'
     )
     filterDbArray('pinned-commands', (item) => item?.pluginName !== effectiveName, 'pinned-changed')
-    filterDbArray('autoStartPlugin', (n) => n !== effectiveName)
-    filterDbArray('outKillPlugin', (n) => n !== effectiveName)
-    filterDbArray('autoDetachPlugin', (n) => n !== effectiveName)
+    filterDbArray('auto-start-plugin', (n) => n !== effectiveName)
+    filterDbArray('out-kill-plugin', (n) => n !== effectiveName)
+    filterDbArray('auto-detach-plugin', (n) => n !== effectiveName)
   }
 
   // ---- Public API ----

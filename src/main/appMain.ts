@@ -170,7 +170,7 @@ app.whenReady().then(async () => {
   // 自动启动已配置的"跟随主程序同时启动运行"的插件
   if (mainWindow) {
     try {
-      const autoStartPlugins = api.dbGet('autoStartPlugin')
+      const autoStartPlugins = api.dbGet('auto-start-plugin')
       const disabledPlugins = pluginsAPI.getDisabledPluginSet()
       if (autoStartPlugins && Array.isArray(autoStartPlugins) && autoStartPlugins.length > 0) {
         console.log('[Main] 开始处理自动启动插件:', { count: autoStartPlugins.length })
