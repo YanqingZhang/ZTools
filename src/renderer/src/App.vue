@@ -885,11 +885,11 @@ onMounted(async () => {
     await commandDataStore.reloadPluginAvailabilityData()
   })
 
-  // 监听更新下载完成事件
-  window.ztools.onUpdateDownloaded((data) => {
-    console.log('更新已下载:', data)
-    windowStore.setUpdateDownloadInfo({
-      hasDownloaded: true,
+  // 自动检查只更新主窗口提示，不直接弹出更新窗口
+  window.ztools.onUpdateAvailable((data) => {
+    console.log('发现可用更新:', data)
+    windowStore.setAvailableUpdateInfo({
+      hasUpdate: true,
       version: data.version,
       changelog: data.changelog
     })
@@ -905,8 +905,8 @@ onMounted(async () => {
     console.error('更新下载失败:', data)
   })
 
-  // 检查是否有已下载的更新
-  windowStore.checkDownloadedUpdate()
+  // 恢复已检测到的更新状态
+  windowStore.checkUpdateStatus()
 
   // 监听超级面板搜索请求（主进程转发，携带剪贴板内容）
   window.ztools.onSuperPanelSearch((data: { text: string; clipboardContent?: any }) => {

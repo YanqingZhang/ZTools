@@ -48,12 +48,18 @@ export class UpdaterAPI {
   }
 
   private showAvailableUpdate(info: PlatformUpdateInfo): void {
-    this.availableUpdateInfo = info
+    this.notifyAvailableUpdate(info)
     this.createUpdateWindow()
+  }
+
+  private notifyAvailableUpdate(info: PlatformUpdateInfo): void {
+    this.availableUpdateInfo = info
+    this.sendUpdateEvent('update-available', info)
   }
 
   private setupIPC(): void {
     ipcMain.handle('updater:check-update', () => this.checkUpdate())
+    ipcMain.handle('updater:show-update-window', () => this.showUpdateWindow())
     ipcMain.handle('updater:start-update', () => this.startUpdate())
     ipcMain.handle('updater:install-downloaded-update', () => this.installDownloadedUpdate())
     ipcMain.handle('updater:get-download-status', () => this.getDownloadStatus())
@@ -107,11 +113,24 @@ export class UpdaterAPI {
 
     const result = await this.platformUpdater.checkForUpdates(false)
     if (result.error) console.error('[Updater] 自动检查更新失败:', result.error)
-    if (result.hasUpdate && result.updateInfo) this.showAvailableUpdate(result.updateInfo)
+    if (result.hasUpdate && result.updateInfo) this.notifyAvailableUpdate(result.updateInfo)
   }
 
-  private getDownloadStatus(): ReturnType<PlatformUpdaterService['getDownloadStatus']> {
-    return this.platformUpdater?.getDownloadStatus() ?? { hasDownloaded: false, status: 'idle' }
+  private getDownloadStatus(): ReturnType<PlatformUpdaterService['getDownloadStatus']> & {
+    hasUpdate: boolean
+  } {
+    const status = this.platformUpdater?.getDownloadStatus() ?? {
+      hasDownloaded: false,
+      status: 'idle'
+    }
+    const info = this.downloadedUpdateInfo ?? this.availableUpdateInfo
+    return {
+      ...status,
+      hasUpdate: Boolean(info),
+      version: status.version ?? info?.version,
+      changelog: status.changelog ?? info?.changelog,
+      status: status.hasDownloaded ? 'downloaded' : info ? 'available' : status.status
+    }
   }
 
   private async installDownloadedUpdate(): Promise<{
@@ -158,6 +177,14 @@ export class UpdaterAPI {
     const updateInfo = this.availableUpdateInfo ?? this.downloadedUpdateInfo
     if (!updateInfo) return { success: false, error: '没有可用的更新' }
     return this.platformUpdater.startUpdate(updateInfo)
+  }
+
+  private showUpdateWindow(): { success: boolean; error?: string } {
+    if (!this.availableUpdateInfo && !this.downloadedUpdateInfo) {
+      return { success: false, error: '没有可用的更新' }
+    }
+    this.createUpdateWindow()
+    return { success: true }
   }
 
   private applyMaterialToUpdateWindow(win: BrowserWindow): void {

@@ -41,9 +41,9 @@ export type SearchMode = 'aggregate' | 'list'
 export type TabKeyFunction = 'navigate' | 'target-command'
 export type BuiltInShortcutKey = 'search' | 'closePlugin' | 'killPlugin' | 'esc'
 
-// 更新下载状态
-interface UpdateDownloadInfo {
-  hasDownloaded: boolean
+// 更新状态
+interface AvailableUpdateInfo {
+  hasUpdate: boolean
   version?: string
   changelog?: string
 }
@@ -109,8 +109,8 @@ export const useWindowStore = defineStore('window', () => {
   const acrylicLightOpacity = ref(78) // 明亮模式默认 78%
   const acrylicDarkOpacity = ref(50) // 暗黑模式默认 50%
 
-  // 更新下载状态
-  const updateDownloadInfo = ref<UpdateDownloadInfo>({ hasDownloaded: false })
+  // 更新状态
+  const availableUpdateInfo = ref<AvailableUpdateInfo>({ hasUpdate: false })
 
   // 更新窗口信息
   function updateWindowInfo(windowInfo: WindowInfo | null): void {
@@ -476,24 +476,24 @@ export const useWindowStore = defineStore('window', () => {
     return elapsedTime >= timeLimit
   }
 
-  // 更新下载状态
-  function setUpdateDownloadInfo(info: UpdateDownloadInfo): void {
-    updateDownloadInfo.value = info
+  // 设置可用更新信息
+  function setAvailableUpdateInfo(info: AvailableUpdateInfo): void {
+    availableUpdateInfo.value = info
   }
 
-  // 检查是否有已下载的更新
-  async function checkDownloadedUpdate(): Promise<void> {
+  // 恢复主进程中已检测到的更新状态
+  async function checkUpdateStatus(): Promise<void> {
     try {
       const status = await window.ztools.updater.getDownloadStatus()
-      if (status.hasDownloaded) {
-        updateDownloadInfo.value = {
-          hasDownloaded: true,
+      if (status.hasUpdate) {
+        availableUpdateInfo.value = {
+          hasUpdate: true,
           version: status.version,
           changelog: status.changelog
         }
       }
     } catch (error) {
-      console.error('检查下载状态失败:', error)
+      console.error('检查更新状态失败:', error)
     }
   }
 
@@ -610,7 +610,7 @@ export const useWindowStore = defineStore('window', () => {
     customColor,
     acrylicLightOpacity,
     acrylicDarkOpacity,
-    updateDownloadInfo,
+    availableUpdateInfo,
     updateWindowInfo,
     updatePlaceholder,
     updateAvatar,
@@ -650,8 +650,8 @@ export const useWindowStore = defineStore('window', () => {
     getAutoPasteTimeLimit,
     getAutoClearTimeLimit,
     shouldClearSearch,
-    setUpdateDownloadInfo,
-    checkDownloadedUpdate,
+    setAvailableUpdateInfo,
+    checkUpdateStatus,
     loadSettings
   }
 })

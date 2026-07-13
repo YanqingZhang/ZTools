@@ -147,13 +147,13 @@
         <span class="tab-target-text">{{ tabHintText }}</span>
         <span class="tab-target-key">Tab</span>
       </div>
-      <!-- 更新提示（有下载好的更新时显示） -->
+      <!-- 更新提示 -->
       <div
-        v-if="windowStore.updateDownloadInfo.hasDownloaded && !windowStore.currentPlugin"
+        v-if="windowStore.availableUpdateInfo.hasUpdate && !windowStore.currentPlugin"
         class="update-notification"
         @click="handleUpdateClick"
       >
-        <span class="update-text">新版本已下载，点击升级</span>
+        <span class="update-text">发现新版本，点击更新</span>
         <UpdateIcon />
       </div>
       <!-- 头像按钮（无更新或插件模式时显示） -->
@@ -1007,22 +1007,13 @@ async function handleSettingsClick(): Promise<void> {
 
 async function handleUpdateClick(): Promise<void> {
   try {
-    // 确认升级
-    const confirmed = confirm(
-      `确定要升级到版本 ${windowStore.updateDownloadInfo.version} 吗？\n\n应用将重启以完成升级。`
-    )
-    if (!confirmed) {
-      return
-    }
-
-    // 执行升级
-    const result = await window.ztools.updater.installDownloadedUpdate()
+    const result = await window.ztools.updater.showUpdateWindow()
     if (!result.success) {
-      alert(`升级失败: ${result.error}`)
+      alert(`打开更新窗口失败: ${result.error}`)
     }
   } catch (error: any) {
-    console.error('升级失败:', error)
-    alert(`升级失败: ${error.message || '未知错误'}`)
+    console.error('打开更新窗口失败:', error)
+    alert(`打开更新窗口失败: ${error.message || '未知错误'}`)
   }
 }
 

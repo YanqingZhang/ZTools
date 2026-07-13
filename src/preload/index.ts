@@ -295,9 +295,13 @@ const api = {
   // 软件更新
   updater: {
     checkUpdate: () => ipcRenderer.invoke('updater:check-update'),
+    showUpdateWindow: () => ipcRenderer.invoke('updater:show-update-window'),
     startUpdate: () => ipcRenderer.invoke('updater:start-update'),
     installDownloadedUpdate: () => ipcRenderer.invoke('updater:install-downloaded-update'),
     getDownloadStatus: () => ipcRenderer.invoke('updater:get-download-status')
+  },
+  onUpdateAvailable: (callback: (data: { version: string; changelog: string }) => void) => {
+    ipcRenderer.on('update-available', (_event, data) => callback(data))
   },
   onUpdateDownloaded: (callback: (data: { version: string; changelog: string }) => void) => {
     ipcRenderer.on('update-downloaded', (_event, data) => callback(data))

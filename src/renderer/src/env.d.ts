@@ -265,14 +265,18 @@ declare global {
           releaseUrl?: string
           error?: string
         }>
+        showUpdateWindow: () => Promise<{ success: boolean; error?: string }>
         startUpdate: () => Promise<{ success: boolean; error?: string }>
         installDownloadedUpdate: () => Promise<{ success: boolean; error?: string }>
         getDownloadStatus: () => Promise<{
+          hasUpdate: boolean
           hasDownloaded: boolean
           version?: string
           changelog?: string
+          status?: string
         }>
       }
+      onUpdateAvailable: (callback: (data: { version: string; changelog: string }) => void) => void
       onUpdateDownloaded: (callback: (data: { version: string; changelog: string }) => void) => void
       onUpdateDownloadStart: (callback: (data: { version: string }) => void) => void
       onUpdateDownloadFailed: (callback: (data: { error: string }) => void) => void
