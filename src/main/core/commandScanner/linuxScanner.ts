@@ -318,18 +318,23 @@ export async function scanApplications(): Promise<Command[]> {
     console.time('[LinuxScanner] 扫描应用')
 
     const searchPaths = getLinuxDesktopPaths()
-    const allDesktopFiles: string[] = []
+    const desktopFileMap = new Map<string, string>() // desktopId -> absolutePath
 
-    // 收集所有 .desktop 文件路径
+    // 收集所有 .desktop 文件路径，并按优先级去重（Desktop ID）
+    // searchPaths 已经按优先级排列（用户级 > 系统级）
     for (const dirPath of searchPaths) {
       const files = await scanDesktopDir(dirPath)
-      allDesktopFiles.push(...files)
+      for (const filePath of files) {
+        const desktopId = path.basename(filePath)
+        if (!desktopFileMap.has(desktopId)) {
+          desktopFileMap.set(desktopId, filePath)
+        }
+      }
     }
 
-    // 去重（同一个 .desktop 文件可能出现在多个目录）
-    const uniqueFiles = [...new Set(allDesktopFiles)]
+    const uniqueFiles = Array.from(desktopFileMap.values())
 
-    console.log(`[LinuxScanner] 找到 ${uniqueFiles.length} 个 .desktop 文件`)
+    console.log(`[LinuxScanner] 找到 ${uniqueFiles.length} 个唯一 .desktop 文件`)
 
     // 并发解析（限制并发数）
     const tasks = uniqueFiles.map((filePath) => () => parseDesktopFileToCommand(filePath))
@@ -338,10 +343,25 @@ export async function scanApplications(): Promise<Command[]> {
     // 过滤掉解析失败或不应显示的项
     const apps = results.filter((cmd): cmd is Command => cmd !== null)
 
-    console.timeEnd('[LinuxScanner] 扫描应用')
-    console.log(`[LinuxScanner] 成功加载 ${apps.length} 个应用`)
+    // 二次去重：如果 Exec 路径和图标都相同，认为是重复应用
+    // 这可以处理不同文件名的 .desktop 指向同一个应用的情况
+    const finalApps: Command[] = []
+    const seenApps = new Set<string>()
 
-    return apps
+    for (const app of apps) {
+      const key = `${app.path}|${app.icon || ''}`
+      if (!seenApps.has(key)) {
+        seenApps.add(key)
+        finalApps.push(app)
+      }
+    }
+
+    console.timeEnd('[LinuxScanner] 扫描应用')
+    console.log(
+      `[LinuxScanner] 成功加载 ${finalApps.length} 个应用 (从 ${apps.length} 个候选应用中去重)`
+    )
+
+    return finalApps
   } catch (error) {
     console.error('[LinuxScanner] 扫描应用失败:', error)
     return []

@@ -1131,7 +1131,6 @@ export const useCommandDataStore = defineStore('commandData', () => {
       }
 
       result.push(...expandDirectAppAliases(baseApp, commandAliases))
-
       return result
     })
   }

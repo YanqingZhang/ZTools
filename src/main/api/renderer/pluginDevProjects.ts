@@ -351,6 +351,7 @@ export class PluginDevProjectsAPI {
   public async importDevPlugin(pluginJsonPath?: string): Promise<any> {
     try {
       if (!pluginJsonPath) {
+        console.log('[DevProjects] 未提供路径，弹出文件选择器')
         const result = await openDialog(
           this.deps.mainWindow!,
           {
@@ -407,7 +408,8 @@ export class PluginDevProjectsAPI {
       console.log('[DevProjects] 项目已登记:', {
         pluginName: pluginConfig.name,
         projectPath: pluginPath,
-        configPath: pluginJsonPath
+        configPath: pluginJsonPath,
+        isNew
       })
 
       this.deps.notifyPluginsChanged()
@@ -571,6 +573,7 @@ export class PluginDevProjectsAPI {
       }
 
       this.deps.writeInstalledPlugins(plugins)
+      console.log('[DevProjects] 已写入已安装插件列表，准备发出变更通知')
       this.deps.notifyPluginsChanged()
       console.log('[DevProjects] 开发模式安装完成:', { projectName, projectPath })
       return { success: true, pluginName: projectName }

@@ -224,12 +224,35 @@ export class PluginAssemblyCoordinator {
 
     try {
       // 第一步：通知主渲染“当前装配目标 token”
-      await mainWindow.webContents.executeJavaScript(
-        `window.ztools?.setAssemblyTarget?.(${JSON.stringify(token)})`
+      // 增加 executeJavaScript 超时处理，防止因为渲染进程卡死导致主进程也卡死
+      const runWithTimeout = <T>(
+        promise: Promise<T>,
+        timeoutMs: number,
+        label: string
+      ): Promise<T> => {
+        return Promise.race([
+          promise,
+          new Promise<T>((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`[Assembly] ${label} 超时 (${timeoutMs}ms)`)),
+              timeoutMs
+            )
+          )
+        ])
+      }
+
+      await runWithTimeout(
+        mainWindow.webContents.executeJavaScript(
+          `window.ztools?.setAssemblyTarget?.(${JSON.stringify(token)})`
+        ),
+        2000,
+        'setAssemblyTarget'
       )
       // 第二步：读取主渲染回执 token，确保主/插件视图状态一致
-      const returned = await mainWindow.webContents.executeJavaScript(
-        `window.ztools?.endAssemblyPlugin?.()`
+      const returned = await runWithTimeout(
+        mainWindow.webContents.executeJavaScript(`window.ztools?.endAssemblyPlugin?.()`),
+        2000,
+        'endAssemblyPlugin'
       )
       // 只有 token 一致才允许继续展示/进入插件
       const ok = returned === token
@@ -318,6 +341,13 @@ export class PluginAssemblyCoordinator {
    */
   public markDomReady(webContentsId: number): void {
     this.domReadyViews.add(webContentsId)
+  }
+
+  /**
+   * 检查视图是否已完成 dom-ready
+   */
+  public isDomReady(webContentsId: number): boolean {
+    return this.domReadyViews.has(webContentsId)
   }
 
   /**

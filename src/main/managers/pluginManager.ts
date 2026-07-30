@@ -1,4 +1,4 @@
-import { BrowserWindow, session, shell, WebContents, WebContentsView } from 'electron'
+import { BrowserWindow, session, shell, WebContents, WebContentsView, Notification } from 'electron'
 import fsSync from 'fs'
 import path from 'path'
 import { pathToFileURL } from 'url'
@@ -676,9 +676,59 @@ export class PluginManager {
       )
 
       const view = this.pluginView
+
+      // 加载加载超时监控 (10s)
+      const loadingTimeout = setTimeout(() => {
+        if (
+          !view.webContents.isDestroyed() &&
+          !this.assemblyCoordinator.isDomReady(view.webContents.id)
+        ) {
+          console.error('[Plugin] 插件加载超时 (10s):', { pluginPath, pluginUrl })
+          this.assemblyCoordinator.trace('create-new-view-timeout', {
+            assemblyId: assembly?.id,
+            pluginPath,
+            featureCode,
+            pluginUrl
+          })
+          // 如果是主窗口当前显示的插件且还在装配中，且长期没响应，我们主动清理它
+          if (assembly && this.assemblyCoordinator.isActiveSession(assembly)) {
+            this.assemblyCoordinator.abortCurrentSession('loading-timeout')
+            // 弹出通知告知用户
+            new Notification({
+              title: '插件加载超时',
+              body: `插件 "${pluginConfig.title || pluginConfig.name}" 加载时间过长，可能开发服务器未启动或网络异常。`
+            }).show()
+          }
+        }
+      }, 10000)
+
+      // 监听加载失败
+      view.webContents.once(
+        'did-fail-load',
+        (_event, errorCode, errorDescription, validatedURL) => {
+          clearTimeout(loadingTimeout)
+          console.error('[Plugin] 插件页面加载失败:', { errorCode, errorDescription, validatedURL })
+          this.assemblyCoordinator.trace('create-new-view-fail-load', {
+            assemblyId: assembly?.id,
+            pluginPath,
+            errorCode,
+            errorDescription,
+            validatedURL
+          })
+          if (assembly && this.assemblyCoordinator.isActiveSession(assembly)) {
+            this.assemblyCoordinator.abortCurrentSession('load-failed')
+            new Notification({
+              title: '插件加载失败',
+              body: `无法加载插件页面：${errorDescription} (${errorCode})`
+            }).show()
+          }
+        }
+      )
+
       view.webContents.loadURL(pluginUrl)
 
       view.webContents.once('dom-ready', async () => {
+        clearTimeout(loadingTimeout)
         this.assemblyCoordinator.markDomReady(view.webContents.id)
         if (assembly && !this.assemblyCoordinator.isActiveSession(assembly)) {
           this.assemblyCoordinator.trace('dom-ready-ignored-inactive-session', {
