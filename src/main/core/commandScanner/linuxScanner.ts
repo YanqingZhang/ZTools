@@ -109,6 +109,9 @@ function getIconSearchPaths(): string[] {
   const home = os.homedir()
   return [
     path.join(home, '.local/share/icons'),
+    path.join(home, '.local/share/flatpak/exports/share/icons'),
+    '/var/lib/flatpak/exports/share/icons',
+    '/var/lib/snapd/desktop/icons',
     '/usr/share/icons',
     '/usr/share/pixmaps',
     path.join(home, '.icons'),
@@ -224,20 +227,23 @@ function getLinuxDesktopPaths(): string[] {
 
   const paths = [
     path.join(home, '.local/share/applications'), // 用户级
-    ...baseDirs.map((dir) => path.join(dir, 'applications')) // 系统级
+    path.join(home, '.local/share/flatpak/exports/share/applications'), // Flatpak 用户级
+    '/var/lib/flatpak/exports/share/applications', // Flatpak 系统级
+    '/var/lib/snapd/desktop/applications', // Snap
+    ...baseDirs.map((dir) => path.join(dir, 'applications')) // 系统级 XDG 目录
   ]
 
   return [...new Set(paths)] // 去重
 }
 
 /**
- * 扫描单个目录下的所有 .desktop 文件
+ * 扫描单个目录下的所有 .desktop 文件（支持常规文件与符号链接）
  */
 async function scanDesktopDir(dirPath: string): Promise<string[]> {
   try {
     const entries = await fs.readdir(dirPath, { withFileTypes: true })
     return entries
-      .filter((e) => e.isFile() && e.name.endsWith('.desktop'))
+      .filter((e) => (e.isFile() || e.isSymbolicLink()) && e.name.endsWith('.desktop'))
       .map((e) => path.join(dirPath, e.name))
   } catch {
     return []
@@ -278,12 +284,32 @@ async function parseDesktopFileToCommand(desktopPath: string): Promise<Command |
       }
     }
 
-    // 生成搜索别名（英文名 + 拼音首字母）
+    // 生成搜索别名（GenericName + Desktop ID 关键词 + 英文名 + 拼音首字母）
     const aliases: string[] = []
+
+    if (entry.GenericName && entry.GenericName !== name) {
+      aliases.push(entry.GenericName)
+    }
+
+    // 从 Desktop ID (如 com.nomachine.nxplayer.desktop) 提取包名关键词
+    const desktopId = path.basename(desktopPath, '.desktop')
+    const idParts = desktopId
+      .split('.')
+      .filter(
+        (part) =>
+          !['com', 'org', 'io', 'net', 'cn', 'de', 'fr', 'desktop', 'app'].includes(
+            part.toLowerCase()
+          )
+      )
+    for (const part of idParts) {
+      if (part.length > 2 && !name.toLowerCase().includes(part.toLowerCase())) {
+        aliases.push(part)
+      }
+    }
 
     // 如果有英文原名（Name 字段与本地化名称不同），添加为搜索别名
     const rawEnglishName = entry['Name']?.trim()
-    if (rawEnglishName && rawEnglishName !== name) {
+    if (rawEnglishName && rawEnglishName !== name && !aliases.includes(rawEnglishName)) {
       aliases.push(rawEnglishName)
     }
 
@@ -293,7 +319,7 @@ async function parseDesktopFileToCommand(desktopPath: string): Promise<Command |
     // 如果名称包含中文，生成拼音首字母并加入 aliases
     if (hasChinese(name)) {
       const pinyinAcronym = extractPinyinAcronym(name)
-      if (pinyinAcronym && pinyinAcronym !== acronym) {
+      if (pinyinAcronym && pinyinAcronym !== acronym && !aliases.includes(pinyinAcronym)) {
         aliases.push(pinyinAcronym)
       }
     }
