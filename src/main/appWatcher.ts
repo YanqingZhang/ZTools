@@ -9,6 +9,7 @@ import {
   type UwpPackageChangeEvent
 } from './core/uwpPackageMonitor'
 import {
+  getLinuxApplicationPaths,
   getMacApplicationPaths,
   getWindowsFlatScanPaths,
   getWindowsRecursiveScanPaths
@@ -64,6 +65,10 @@ class AppWatcher {
 
     if (process.platform === 'darwin') {
       return getMacApplicationPaths()
+    }
+
+    if (process.platform === 'linux') {
+      return getLinuxApplicationPaths()
     }
 
     return []
@@ -128,6 +133,21 @@ class AppWatcher {
       }
 
       return true
+    }
+
+    if (process.platform === 'linux') {
+      // Linux: 放行 .desktop 文件
+      if (basename.endsWith('.desktop')) {
+        return false
+      }
+
+      // 仅放行目录，忽略其他无关文件
+      try {
+        const stats = fs.statSync(filePath)
+        return !stats.isDirectory()
+      } catch {
+        return !basename.endsWith('.desktop')
+      }
     }
 
     return true
@@ -234,6 +254,23 @@ class AppWatcher {
       })
     }
 
+    if (process.platform === 'linux') {
+      // Linux: 监听 .desktop 文件的添加与修改
+      watcher.on('add', (filePath: string) => {
+        if (filePath.endsWith('.desktop')) {
+          console.log('[AppWatcher] 检测到新应用:', filePath)
+          this.notifyChange('add', filePath)
+        }
+      })
+
+      watcher.on('change', (filePath: string) => {
+        if (filePath.endsWith('.desktop')) {
+          console.log('[AppWatcher] 检测到应用变更:', filePath)
+          this.notifyChange('add', filePath)
+        }
+      })
+    }
+
     // 监听删除事件
     if (process.platform === 'win32') {
       // Windows: 监听 .lnk 文件删除
@@ -249,6 +286,16 @@ class AppWatcher {
       // macOS: 监听 .app 目录删除
       watcher.on('unlinkDir', (filePath: string) => {
         if (filePath.endsWith('.app')) {
+          console.log('[AppWatcher] 检测到应用删除:', filePath)
+          this.notifyChange('remove', filePath)
+        }
+      })
+    }
+
+    if (process.platform === 'linux') {
+      // Linux: 监听 .desktop 文件删除
+      watcher.on('unlink', (filePath: string) => {
+        if (filePath.endsWith('.desktop')) {
           console.log('[AppWatcher] 检测到应用删除:', filePath)
           this.notifyChange('remove', filePath)
         }

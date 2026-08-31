@@ -200,4 +200,37 @@ describe('AppWatcher 双 watcher 接线', () => {
     expect(flatWatcher.close).toHaveBeenCalledTimes(1)
     expect(uwpMonitorMock.stop).toHaveBeenCalledTimes(1)
   })
+
+  it('Linux 平台下 .desktop 文件添加、修改与删除事件触发 refreshAppsCache', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    appWatcher.init({} as never)
+
+    const watchMock = vi.mocked(chokidar.watch)
+    expect(watchMock).toHaveBeenCalledTimes(1)
+
+    const linuxWatcher = watchMock.mock.results[0].value as {
+      __emit: (event: string, ...args: unknown[]) => void
+    }
+
+    // add .desktop
+    linuxWatcher.__emit('add', '/usr/share/applications/test.desktop')
+    expect(appsAPI.refreshAppsCache).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1000)
+    expect(appsAPI.refreshAppsCache).toHaveBeenCalledTimes(1)
+
+    // change .desktop
+    linuxWatcher.__emit('change', '/usr/share/applications/test.desktop')
+    vi.advanceTimersByTime(1000)
+    expect(appsAPI.refreshAppsCache).toHaveBeenCalledTimes(2)
+
+    // unlink .desktop
+    linuxWatcher.__emit('unlink', '/usr/share/applications/test.desktop')
+    vi.advanceTimersByTime(1000)
+    expect(appsAPI.refreshAppsCache).toHaveBeenCalledTimes(3)
+
+    // 非 .desktop 文件不触发刷新
+    linuxWatcher.__emit('add', '/usr/share/applications/test.txt')
+    vi.advanceTimersByTime(1000)
+    expect(appsAPI.refreshAppsCache).toHaveBeenCalledTimes(3)
+  })
 })

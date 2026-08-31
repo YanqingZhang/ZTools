@@ -3,6 +3,7 @@ import path from 'path'
 import os from 'os'
 import { pinyin as getPinyin } from 'pinyin-pro'
 import { extractAcronym } from '../../utils/common'
+import { getLinuxApplicationPaths } from '../../utils/systemPaths'
 import { Command } from './types'
 import { pLimit } from './utils'
 
@@ -10,22 +11,28 @@ import { pLimit } from './utils'
 // XDG .desktop 文件解析器
 // ============================================================
 
-interface DesktopEntry {
+export interface DesktopEntry {
   Name?: string
   GenericName?: string
+  Comment?: string
+  Keywords?: string
   Exec?: string
   Icon?: string
   NoDisplay?: string
   Hidden?: string
   Type?: string
+  'X-Ubuntu-Gettext-Domain'?: string
   // 本地化字段
   [key: string]: string | undefined
 }
 
 /**
  * 解析 .desktop 文件，返回 [Desktop Entry] 部分的键值对
+ *
+ * @param content .desktop 文件文本内容
+ * @returns 包含键值对的 DesktopEntry 对象
  */
-function parseDesktopFile(content: string): DesktopEntry {
+export function parseDesktopFile(content: string): DesktopEntry {
   const result: DesktopEntry = {}
   let inDesktopEntry = false
 
@@ -55,43 +62,218 @@ function parseDesktopFile(content: string): DesktopEntry {
   return result
 }
 
+// ============================================================
+// GNU Gettext .mo 本地化解析支持
+// ============================================================
+
 /**
- * 获取本地化的应用名称
- * 优先级：Name[zh_CN] > Name[zh] > Name[en_US] > Name
+ * 解析 GNU gettext 二进制 .mo 文件数据
+ *
+ * @param buffer .mo 文件内容的 Buffer
+ * @returns 包含原始字符串与翻译映射关系的 Map
  */
-function getLocalizedName(entry: DesktopEntry): string {
-  // 获取系统语言代码（如 "zh_CN"、"en_US"）
-  const lang = process.env.LANG || process.env.LANGUAGE || ''
-  const langCode = lang.split('.')[0] // 去掉编码部分 (UTF-8)
-  const parts = langCode.split('_')
-  const langBase = parts[0] // 只取语言部分 (zh)
+export function parseMoBuffer(buffer: Buffer): Map<string, string> {
+  const translations = new Map<string, string>()
 
-  // 按优先级尝试本地化名称
-  const candidates: string[] = []
-  if (langCode) {
-    candidates.push(`Name[${langCode}]`)
+  // 基础长度校验（至少包含魔数、版本与关键偏移量共 20 字节）
+  if (buffer.length < 20) {
+    return translations
   }
-  if (parts.length > 1 && parts[1]) {
-    candidates.push(`Name[${langBase}_${parts[1]}]`) // 防御性写法
-  }
-  if (langBase) {
-    candidates.push(`Name[${langBase}]`) // Name[zh]
-  }
-  candidates.push('Name') // 兜底
 
-  for (const key of candidates) {
-    const value = entry[key]
-    if (value && value.trim()) {
-      return value.trim()
+  // 校验魔数判断字节序（小端或大端）
+  const magic = buffer.readUInt32LE(0)
+  let isLE = true
+  if (magic === 0x950412de) {
+    isLE = true
+  } else if (magic === 0xde120495) {
+    isLE = false
+  } else {
+    return translations
+  }
+
+  // 读取字符串总数以及原串/译文表偏移量
+  const numStrings = isLE ? buffer.readUInt32LE(8) : buffer.readUInt32BE(8)
+  const origTableOffset = isLE ? buffer.readUInt32LE(12) : buffer.readUInt32BE(12)
+  const transTableOffset = isLE ? buffer.readUInt32LE(16) : buffer.readUInt32BE(16)
+
+  // 边界保护：防止偏移越界
+  if (
+    origTableOffset + numStrings * 8 > buffer.length ||
+    transTableOffset + numStrings * 8 > buffer.length
+  ) {
+    return translations
+  }
+
+  // 遍历字符串表提取条目
+  for (let i = 0; i < numStrings; i++) {
+    const origLen = isLE
+      ? buffer.readUInt32LE(origTableOffset + i * 8)
+      : buffer.readUInt32BE(origTableOffset + i * 8)
+    const origOffset = isLE
+      ? buffer.readUInt32LE(origTableOffset + i * 8 + 4)
+      : buffer.readUInt32BE(origTableOffset + i * 8 + 4)
+    const transLen = isLE
+      ? buffer.readUInt32LE(transTableOffset + i * 8)
+      : buffer.readUInt32BE(transTableOffset + i * 8)
+    const transOffset = isLE
+      ? buffer.readUInt32LE(transTableOffset + i * 8 + 4)
+      : buffer.readUInt32BE(transTableOffset + i * 8 + 4)
+
+    // 读取并存入字典映射
+    if (origOffset + origLen <= buffer.length && transOffset + transLen <= buffer.length) {
+      const origStr = buffer.toString('utf8', origOffset, origOffset + origLen)
+      const transStr = buffer.toString('utf8', transOffset, transOffset + transLen)
+      translations.set(origStr, transStr)
     }
   }
 
-  return entry['Name']?.trim() || ''
+  return translations
+}
+
+// 内存中缓存已解析的 .mo 字典
+const moCache = new Map<string, Map<string, string>>()
+
+/**
+ * 获取当前系统的候选语言代码列表
+ *
+ * @returns 语言代码列表（例如 ['zh_CN', 'zh', 'en_US', 'en']）
+ */
+export function getLocaleCandidates(): string[] {
+  const envLang = [
+    process.env.LANGUAGE,
+    process.env.LC_ALL,
+    process.env.LC_MESSAGES,
+    process.env.LANG
+  ].filter(Boolean)
+
+  const candidates: string[] = []
+
+  // 提取语言和地区代码
+  for (const raw of envLang) {
+    if (!raw) continue
+    for (const segment of raw.split(':')) {
+      const code = segment.split('.')[0].trim()
+      if (!code) continue
+      if (!candidates.includes(code)) {
+        candidates.push(code)
+      }
+      const parts = code.split('_')
+      if (parts[0] && !candidates.includes(parts[0])) {
+        candidates.push(parts[0])
+      }
+    }
+  }
+
+  // 默认兜底保障包含中文与英文候选
+  if (!candidates.includes('zh_CN')) candidates.push('zh_CN')
+  if (!candidates.includes('zh')) candidates.push('zh')
+  if (!candidates.includes('en_US')) candidates.push('en_US')
+  if (!candidates.includes('en')) candidates.push('en')
+
+  return candidates
+}
+
+/**
+ * 获取 gettext 本地化搜索目录
+ *
+ * @returns 目录绝对路径数组
+ */
+function getLocaleSearchDirs(): string[] {
+  const home = os.homedir()
+  return [
+    '/usr/share/locale-langpack',
+    '/usr/share/locale',
+    '/usr/local/share/locale',
+    path.join(home, '.local/share/locale')
+  ]
+}
+
+/**
+ * 根据 domain 和原文读取所有可能的目标语言翻译（支持多路径多语言包收集）
+ *
+ * @param domain gettext 域名称（如 aisleriot）
+ * @param msgid 待翻译的原文字符串
+ * @returns 查找到的所有非空译文数组（去重）
+ */
+export async function getGettextTranslations(domain: string, msgid: string): Promise<string[]> {
+  if (!domain || !msgid) return []
+
+  const translations = new Set<string>()
+  const localeDirs = getLocaleSearchDirs()
+  const langCandidates = getLocaleCandidates()
+
+  // 遍历语言和目录查找 .mo 文件
+  for (const lang of langCandidates) {
+    for (const dir of localeDirs) {
+      const moPath = path.join(dir, lang, 'LC_MESSAGES', `${domain}.mo`)
+      let catalog = moCache.get(moPath)
+
+      if (!catalog) {
+        try {
+          const buf = await fs.readFile(moPath)
+          catalog = parseMoBuffer(buf)
+          moCache.set(moPath, catalog)
+        } catch {
+          // 标记为空字典，避免重复 I/O 尝试不存在的文件
+          catalog = new Map()
+          moCache.set(moPath, catalog)
+        }
+      }
+
+      const val = catalog.get(msgid)
+      if (val && val.trim() && val.trim() !== msgid) {
+        translations.add(val.trim())
+      }
+    }
+  }
+
+  return Array.from(translations)
+}
+
+/**
+ * 解析 DesktopEntry 字段的本地化首选值及所有备选译文
+ *
+ * @param entry DesktopEntry 对象
+ * @param field 字段名称（如 'Name', 'GenericName', 'Comment', 'Keywords'）
+ * @returns 本地化首选字符串及所有备选译文
+ */
+export async function resolveLocalizedField(
+  entry: DesktopEntry,
+  field: string
+): Promise<{ primary: string; allTranslations: string[] }> {
+  const rawDefault = entry[field]?.trim() || ''
+  const langCandidates = getLocaleCandidates()
+  const translations = new Set<string>()
+
+  // 1. 优先从 .desktop 本地化属性读取（如 Name[zh_CN]、Name[zh]）
+  for (const lang of langCandidates) {
+    const val = entry[`${field}[${lang}]`]?.trim()
+    if (val) {
+      translations.add(val)
+    }
+  }
+
+  // 2. 若存在 X-Ubuntu-Gettext-Domain，尝试从系统的 .mo 文件查询
+  const gettextDomain = entry['X-Ubuntu-Gettext-Domain']?.trim()
+  if (gettextDomain && rawDefault) {
+    const moTranslations = await getGettextTranslations(gettextDomain, rawDefault)
+    for (const t of moTranslations) {
+      translations.add(t)
+    }
+  }
+
+  const allTranslations = Array.from(translations)
+  const primary = allTranslations[0] || rawDefault
+
+  return { primary, allTranslations }
 }
 
 /**
  * 清理 Exec 字段中的 % 参数占位符（如 %f, %u, %F, %U ...）
  * 并提取实际可执行文件路径
+ *
+ * @param exec 原始 Exec 命令行
+ * @returns 清理后的可执行命令路径
  */
 function cleanExecCommand(exec: string): string {
   return exec
@@ -126,6 +308,9 @@ const ICON_PREFERRED_SIZES = ['256x256', '128x128', '64x64', '48x48', '32x32', '
 /**
  * 在 XDG 图标主题中查找图标文件路径
  * 如果找不到则返回 null
+ *
+ * @param iconName 图标名称或绝对路径
+ * @returns 图标绝对路径或 null
  */
 async function findIconPath(iconName: string): Promise<string | null> {
   // 如果是绝对路径且存在，直接返回
@@ -189,6 +374,9 @@ async function findIconPath(iconName: string): Promise<string | null> {
 /**
  * 提取中文字符串的拼音首字母
  * 例如：「微信」→「wx」，「谷歌浏览器」→「gglq」
+ *
+ * @param name 中文或中英混合文本
+ * @returns 小写拼音缩写字符串
  */
 function extractPinyinAcronym(name: string): string {
   let result = ''
@@ -208,6 +396,9 @@ function extractPinyinAcronym(name: string): string {
 
 /**
  * 判断字符串是否包含中文字符
+ *
+ * @param str 待检测字符串
+ * @returns 包含中文返回 true，否则 false
  */
 function hasChinese(str: string): boolean {
   return /[\u4e00-\u9fa5]/.test(str)
@@ -218,26 +409,10 @@ function hasChinese(str: string): boolean {
 // ============================================================
 
 /**
- * 获取 Linux 上所有 .desktop 文件的搜索路径（XDG 规范）
- */
-function getLinuxDesktopPaths(): string[] {
-  const home = os.homedir()
-  const xdgDataDirs = process.env.XDG_DATA_DIRS || '/usr/local/share:/usr/share'
-  const baseDirs = xdgDataDirs.split(':').filter(Boolean)
-
-  const paths = [
-    path.join(home, '.local/share/applications'), // 用户级
-    path.join(home, '.local/share/flatpak/exports/share/applications'), // Flatpak 用户级
-    '/var/lib/flatpak/exports/share/applications', // Flatpak 系统级
-    '/var/lib/snapd/desktop/applications', // Snap
-    ...baseDirs.map((dir) => path.join(dir, 'applications')) // 系统级 XDG 目录
-  ]
-
-  return [...new Set(paths)] // 去重
-}
-
-/**
  * 扫描单个目录下的所有 .desktop 文件（支持常规文件与符号链接）
+ *
+ * @param dirPath 待扫描目录路径
+ * @returns 文件完整路径列表
  */
 async function scanDesktopDir(dirPath: string): Promise<string[]> {
   try {
@@ -253,8 +428,11 @@ async function scanDesktopDir(dirPath: string): Promise<string[]> {
 /**
  * 将单个 .desktop 文件转换为 Command 对象
  * 如果应用不应显示（NoDisplay=true 等），返回 null
+ *
+ * @param desktopPath .desktop 文件绝对路径
+ * @returns Command 对象或 null
  */
-async function parseDesktopFileToCommand(desktopPath: string): Promise<Command | null> {
+export async function parseDesktopFileToCommand(desktopPath: string): Promise<Command | null> {
   try {
     const content = await fs.readFile(desktopPath, 'utf-8')
     const entry = parseDesktopFile(content)
@@ -269,13 +447,17 @@ async function parseDesktopFileToCommand(desktopPath: string): Promise<Command |
       return null
     }
 
-    const name = getLocalizedName(entry)
+    // 获取本地化应用名与所有可用译文
+    const { primary: name, allTranslations: nameTranslations } = await resolveLocalizedField(
+      entry,
+      'Name'
+    )
     if (!name) return null
 
     const exec = cleanExecCommand(entry.Exec)
     if (!exec) return null
 
-    // 查找图标
+    // 查找应用图标
     let iconUrl: string | undefined
     if (entry.Icon) {
       const iconPath = await findIconPath(entry.Icon)
@@ -284,14 +466,52 @@ async function parseDesktopFileToCommand(desktopPath: string): Promise<Command |
       }
     }
 
-    // 生成搜索别名（GenericName + Desktop ID 关键词 + 英文名 + 拼音首字母）
-    const aliases: string[] = []
+    // 汇总所有别名与搜索关键词
+    const aliasSet = new Set<string>()
 
-    if (entry.GenericName && entry.GenericName !== name) {
-      aliases.push(entry.GenericName)
+    // 1. 添加所有其他名称译文
+    for (const trans of nameTranslations) {
+      if (trans && trans !== name) {
+        aliasSet.add(trans)
+      }
     }
 
-    // 从 Desktop ID (如 com.nomachine.nxplayer.desktop) 提取包名关键词
+    // 2. 添加英文原名
+    const rawEnglishName = entry['Name']?.trim()
+    if (rawEnglishName && rawEnglishName !== name) {
+      aliasSet.add(rawEnglishName)
+    }
+
+    // 3. 解析 GenericName 及其翻译
+    const { primary: genericName, allTranslations: genericTranslations } =
+      await resolveLocalizedField(entry, 'GenericName')
+    if (genericName && genericName !== name) {
+      aliasSet.add(genericName)
+    }
+    for (const trans of genericTranslations) {
+      if (trans && trans !== name) {
+        aliasSet.add(trans)
+      }
+    }
+
+    // 4. 解析 Keywords 及其翻译（分号分隔列表）
+    const { primary: rawKeywords, allTranslations: keywordTranslations } =
+      await resolveLocalizedField(entry, 'Keywords')
+    const allKeywordTexts = [rawKeywords, ...keywordTranslations]
+    for (const kwText of allKeywordTexts) {
+      if (!kwText) continue
+      const splitKeywords = kwText
+        .split(';')
+        .map((k) => k.trim())
+        .filter((k) => k.length > 0)
+      for (const kw of splitKeywords) {
+        if (kw !== name) {
+          aliasSet.add(kw)
+        }
+      }
+    }
+
+    // 5. 从 Desktop ID (如 com.nomachine.nxplayer.desktop) 提取包名关键词
     const desktopId = path.basename(desktopPath, '.desktop')
     const idParts = desktopId
       .split('.')
@@ -303,26 +523,27 @@ async function parseDesktopFileToCommand(desktopPath: string): Promise<Command |
       )
     for (const part of idParts) {
       if (part.length > 2 && !name.toLowerCase().includes(part.toLowerCase())) {
-        aliases.push(part)
+        aliasSet.add(part)
       }
     }
 
-    // 如果有英文原名（Name 字段与本地化名称不同），添加为搜索别名
-    const rawEnglishName = entry['Name']?.trim()
-    if (rawEnglishName && rawEnglishName !== name && !aliases.includes(rawEnglishName)) {
-      aliases.push(rawEnglishName)
-    }
-
-    // 生成缩写：英文首字母缩写
+    // 6. 生成缩写：英文首字母缩写
     const acronym = extractAcronym(name) || (rawEnglishName ? extractAcronym(rawEnglishName) : '')
 
-    // 如果名称包含中文，生成拼音首字母并加入 aliases
-    if (hasChinese(name)) {
-      const pinyinAcronym = extractPinyinAcronym(name)
-      if (pinyinAcronym && pinyinAcronym !== acronym && !aliases.includes(pinyinAcronym)) {
-        aliases.push(pinyinAcronym)
+    // 7. 对名称和所有中文别名提取拼音缩写，并注入别名列表
+    const wordsForPinyin = [name, ...Array.from(aliasSet)]
+    for (const word of wordsForPinyin) {
+      if (hasChinese(word)) {
+        const pinyinAcronym = extractPinyinAcronym(word)
+        if (pinyinAcronym && pinyinAcronym !== acronym) {
+          aliasSet.add(pinyinAcronym)
+        }
       }
     }
+
+    // 移除与主名称完全一致的条目
+    aliasSet.delete(name)
+    const aliases = Array.from(aliasSet)
 
     return {
       name,
@@ -338,12 +559,14 @@ async function parseDesktopFileToCommand(desktopPath: string): Promise<Command |
 
 /**
  * 扫描 Linux 系统上安装的所有应用程序
+ *
+ * @returns 扫描并去重后的应用程序指令列表
  */
 export async function scanApplications(): Promise<Command[]> {
   try {
     console.time('[LinuxScanner] 扫描应用')
 
-    const searchPaths = getLinuxDesktopPaths()
+    const searchPaths = getLinuxApplicationPaths()
     const desktopFileMap = new Map<string, string>() // desktopId -> absolutePath
 
     // 收集所有 .desktop 文件路径，并按优先级去重（Desktop ID）
