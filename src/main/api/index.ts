@@ -131,14 +131,14 @@ class APIManager {
     pluginAiAPI.init(mainWindow, pluginManager)
     pluginLifecycleAPI.init(mainWindow, pluginManager)
     pluginUIAPI.init(mainWindow, pluginManager)
-    pluginUserAPI.init()
+    pluginUserAPI.init(pluginManager)
     // 注入主题信息变更钩子：当主题色/材质变更时通知所有插件视图
     windowManager.setOnThemeInfoChanged(() => {
       pluginUIAPI.broadcastThemeInfoToAllPlugins()
     })
     pluginClipboardAPI.init()
     pluginDeviceAPI.init()
-    pluginDialogAPI.init(mainWindow)
+    pluginDialogAPI.init(mainWindow, pluginManager)
     pluginWindowAPI.init(mainWindow, pluginManager)
     pluginScreenAPI.init(mainWindow)
     // 初始化插件输入 API（需要 windowManager 和 clipboardManager 支持 paste/type 功能）
@@ -171,7 +171,7 @@ class APIManager {
     })
 
     // 初始化超级面板管理器
-    superPanelManager.init(mainWindow)
+    superPanelManager.init(mainWindow, pluginManager)
 
     // 初始化翻译管理器
     translationManager.init()
@@ -517,7 +517,14 @@ class APIManager {
   }
 
   /**
-   * 启动匹配到的插件命令
+   * 启动匹配到的插件命令。
+   * @param plugin 匹配到的插件信息。
+   * @param feature 匹配到的 feature 配置。
+   * @param cmdLabel 命令显示名称。
+   * @param cmdType 命令类型。
+   * @param context 全局快捷键携带的输入上下文。
+   * @returns 插件启动完成后的 Promise。
+   * @throws 插件启动失败时拒绝该 Promise。
    */
   private async launchMatchedPlugin(
     plugin: any,
@@ -532,6 +539,7 @@ class APIManager {
       featureCode: feature.code,
       name: cmdLabel,
       cmdType,
+      launchSource: 'global-shortcut' as const,
       param: {
         ...this.buildShortcutLaunchParam(cmdType, context),
         code: feature.code

@@ -1,4 +1,4 @@
-import { app, clipboard, ipcMain, Menu, shell } from 'electron'
+import { app, clipboard, ipcMain, Menu, nativeImage, shell } from 'electron'
 import { promises as fs } from 'fs'
 import path from 'path'
 import { pathToFileURL } from 'url'
@@ -9,6 +9,8 @@ import { getAvatarPath } from '../../core/appData/appDataPaths'
 
 // 头像目录
 const AVATAR_DIR = getAvatarPath()
+const SEARCH_WALLPAPER_MAX_WIDTH = 1920
+const SEARCH_WALLPAPER_JPEG_QUALITY = 85
 
 /**
  * 系统集成API - 主程序专用
@@ -93,6 +95,12 @@ export class SystemAPI {
     }
   }
 
+  /**
+   * 获取最近复制的内容（供渲染进程被动即时查询）。
+   *
+   * @param timeLimit 可选的时间限制（毫秒），不传或传 0 表示无时间限制。
+   * @returns 最近复制的内容对象；无有效内容时返回 null。
+   */
   private async getLastCopiedContent(timeLimit?: number): Promise<{
     type: 'text' | 'image' | 'file'
     data: string | Array<{ path: string; name: string; isDirectory: boolean }>
@@ -267,6 +275,124 @@ export class SystemAPI {
     } catch (error: unknown) {
       console.error('[System] 选择图片失败:', error)
       return { success: false, error: error instanceof Error ? error.message : '未知错误' }
+    }
+  }
+
+  /**
+   * 选择主搜索窗口壁纸，并将托管副本保存到头像目录。
+   * @returns 包含托管文件路径、URL 和压缩状态的选择结果
+   */
+  public async selectSearchWallpaper(): Promise<{
+    success: boolean
+    path?: string
+    url?: string
+    width?: number
+    height?: number
+    compressed?: boolean
+    error?: string
+  }> {
+    try {
+      const result = await openDialog(
+        this.mainWindow!,
+        {
+          title: '选择主搜索窗口壁纸',
+          filters: [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'] }],
+          properties: ['openFile']
+        },
+        '未选择文件'
+      )
+      if (!result.success) {
+        return { success: false, error: result.error }
+      }
+
+      // 先解码原图并读取像素尺寸，无法识别的文件不写入托管目录。
+      const originalPath = result.data!.filePaths[0]
+      const sourceImage = nativeImage.createFromPath(originalPath)
+      if (sourceImage.isEmpty()) {
+        return { success: false, error: '无法读取所选图片' }
+      }
+      const sourceSize = sourceImage.getSize()
+      if (sourceSize.width <= 0 || sourceSize.height <= 0) {
+        return { success: false, error: '所选图片尺寸无效' }
+      }
+
+      // 使用唯一文件名规避 Chromium 对同 URL 图片资源的缓存。
+      const shouldCompress = sourceSize.width > SEARCH_WALLPAPER_MAX_WIDTH
+      const sourceExtension = path.extname(originalPath).toLowerCase()
+      const managedExtension = shouldCompress
+        ? sourceExtension === '.jpg' || sourceExtension === '.jpeg'
+          ? '.jpg'
+          : '.png'
+        : sourceExtension
+      const wallpaperPath = path.join(
+        AVATAR_DIR,
+        `search-wallpaper-${Date.now()}${managedExtension}`
+      )
+
+      await fs.mkdir(AVATAR_DIR, { recursive: true })
+
+      let outputSize = sourceSize
+      if (shouldCompress) {
+        // 超宽图片等比缩小到 1920px，避免主窗口加载过大的纹理。
+        const resizedImage = sourceImage.resize({
+          width: SEARCH_WALLPAPER_MAX_WIDTH,
+          quality: 'best'
+        })
+        if (resizedImage.isEmpty()) {
+          return { success: false, error: '壁纸压缩失败' }
+        }
+        outputSize = resizedImage.getSize()
+        const outputBuffer =
+          managedExtension === '.jpg'
+            ? resizedImage.toJPEG(SEARCH_WALLPAPER_JPEG_QUALITY)
+            : resizedImage.toPNG()
+        await fs.writeFile(wallpaperPath, outputBuffer)
+      } else {
+        // 未超过宽度限制时保留原始编码，避免不必要的画质损失。
+        await fs.copyFile(originalPath, wallpaperPath)
+      }
+
+      // 新文件成功落盘后再清理旧托管副本，确保失败时仍可使用旧壁纸。
+      await this.cleanupManagedSearchWallpapers(wallpaperPath)
+
+      return {
+        success: true,
+        path: wallpaperPath,
+        url: pathToFileURL(wallpaperPath).href,
+        width: outputSize.width,
+        height: outputSize.height,
+        compressed: shouldCompress
+      }
+    } catch (error: unknown) {
+      console.error('[System] 选择主搜索窗口壁纸失败:', error)
+      return { success: false, error: error instanceof Error ? error.message : '未知错误' }
+    }
+  }
+
+  /**
+   * 清理头像目录中的旧壁纸托管副本，仅保留当前文件。
+   * @param keptFilePath 当前正在使用且必须保留的壁纸路径
+   * @returns 清理完成后结束的 Promise
+   */
+  private async cleanupManagedSearchWallpapers(keptFilePath: string): Promise<void> {
+    try {
+      const entries = await fs.readdir(AVATAR_DIR, { withFileTypes: true })
+      const keptPath = path.resolve(keptFilePath)
+
+      // 删除范围严格限定为本功能生成的普通文件，避免影响头像和其他资源。
+      await Promise.all(
+        entries
+          .filter((entry) => entry.isFile() && entry.name.startsWith('search-wallpaper-'))
+          .map(async (entry) => {
+            const candidatePath = path.resolve(AVATAR_DIR, entry.name)
+            if (candidatePath !== keptPath) {
+              await fs.unlink(candidatePath)
+            }
+          })
+      )
+    } catch (error) {
+      // 清理失败不应回滚已经成功生成的新壁纸。
+      console.warn('[System] 清理旧主搜索窗口壁纸失败:', error)
     }
   }
 

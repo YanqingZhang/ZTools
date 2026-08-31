@@ -7,7 +7,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const { mockLaunch, mockUwpLaunch, mockOpenPath, mockOpenExternal } = vi.hoisted(() => ({
   mockLaunch: vi.fn(async () => ({ success: true, hresult: 0, stage: 'launched' })),
-  mockUwpLaunch: vi.fn(() => true),
+  mockUwpLaunch: vi.fn(() => ({
+    success: true,
+    hresult: 0,
+    foregroundHresult: 0,
+    foregroundPermissionGranted: true,
+    processId: 1234,
+    stage: 'completed'
+  })),
   mockOpenPath: vi.fn(async () => ''),
   mockOpenExternal: vi.fn(async () => undefined)
 }))
@@ -56,6 +63,15 @@ describe('resolveLaunchWorkingDirectory', () => {
 describe('launchApp 传递工作目录 (#603)', () => {
   beforeEach(() => {
     mockLaunch.mockClear()
+    mockUwpLaunch.mockClear()
+    mockUwpLaunch.mockReturnValue({
+      success: true,
+      hresult: 0,
+      foregroundHresult: 0,
+      foregroundPermissionGranted: true,
+      processId: 1234,
+      stage: 'completed'
+    })
     mockOpenPath.mockClear()
   })
   afterEach(() => {
@@ -93,5 +109,69 @@ describe('launchApp 传递工作目录 (#603)', () => {
 
     expect(mockLaunch).not.toHaveBeenCalled()
     expect(mockOpenPath).toHaveBeenCalledWith('calc.exe')
+  })
+})
+
+describe('launchApp 启动 UWP 应用', () => {
+  beforeEach(() => {
+    mockUwpLaunch.mockClear()
+    mockUwpLaunch.mockReturnValue({
+      success: true,
+      hresult: 0,
+      foregroundHresult: 0,
+      foregroundPermissionGranted: true,
+      processId: 1234,
+      stage: 'completed'
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('原生激活成功时完成启动', async () => {
+    await expect(
+      launchApp('uwp:Microsoft.WindowsCalculator_8wekyb3d8bbwe!App')
+    ).resolves.toBeUndefined()
+
+    expect(mockUwpLaunch).toHaveBeenCalledWith('Microsoft.WindowsCalculator_8wekyb3d8bbwe!App')
+  })
+
+  it('原生激活失败时抛出包含阶段和 HRESULT 的错误', async () => {
+    mockUwpLaunch.mockReturnValue({
+      success: false,
+      hresult: 0x80070002,
+      foregroundHresult: 0,
+      foregroundPermissionGranted: true,
+      processId: 0,
+      stage: 'activate-application'
+    })
+
+    await expect(launchApp('uwp:missing!App')).rejects.toThrow(
+      'UWP 激活失败: stage=activate-application, hresult=0x80070002'
+    )
+  })
+
+  it('前台权限转交失败时仍保留成功启动结果', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mockUwpLaunch.mockReturnValue({
+      success: true,
+      hresult: 0,
+      foregroundHresult: 0x80070005,
+      foregroundPermissionGranted: false,
+      processId: 1234,
+      stage: 'completed'
+    })
+
+    await expect(
+      launchApp('uwp:Microsoft.WindowsCalculator_8wekyb3d8bbwe!App')
+    ).resolves.toBeUndefined()
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[Launcher] UWP 已启动，但前台权限转交失败:',
+      expect.objectContaining({
+        foregroundHresultHex: '0x80070005',
+        processId: 1234
+      })
+    )
   })
 })

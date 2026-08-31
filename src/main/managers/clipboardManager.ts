@@ -943,18 +943,34 @@ class ClipboardManager {
     return content?.type === 'image' ? (content.data as string) : null
   }
 
-  // 获取最后复制的内容（统一接口）
+  /**
+   * 获取最近复制的内容。
+   * 当未指定 minSequence 时，仅执行被动即时查询，无有效缓存时立即返回 null；
+   * 当指定了 minSequence（如超级面板模拟复制后）时，会轮询等待新序号的复制事件。
+   *
+   * @param timeLimit 可选的时间限制（毫秒），不传或传 0 表示无时间限制。
+   * @param minSequence 可选的最小序号，仅接受晚于该序号的新复制内容。
+   * @returns 最近复制的内容对象；若无有效内容或等待超时则返回 null。
+   */
   public async getLastCopiedContent(
-    timeLimit?: number, // 可选：时间限制（毫秒），不传或传 0 表示无时间限制
-    minSequence?: number // 可选：仅接受晚于该序号的新复制内容
+    timeLimit?: number,
+    minSequence?: number
   ): Promise<LastCopiedContent | null> {
+    // 优先尝试读取当前内存中的有效复制缓存
     const cachedContent = this.getValidLastCopiedContent(timeLimit)
     if (cachedContent && (!minSequence || cachedContent.sequence > minSequence)) {
       console.log('[Clipboard] 获取到有效的最后复制内容，直接返回缓存')
       return cachedContent
     }
 
-    const initialSequence = Math.max(this.lastCopiedContent?.sequence ?? 0, minSequence ?? 0)
+    // 未指定 minSequence 时属于被动查询（如搜索框自动粘贴），未命中缓存立即返回，不进行轮询等待
+    if (minSequence === undefined) {
+      console.log('[Clipboard] 未获取到有效的最后复制内容，不等待直接返回')
+      return null
+    }
+
+    // 主动等待新复制事件（如超级面板划词）
+    const initialSequence = Math.max(this.lastCopiedContent?.sequence ?? 0, minSequence)
     const waitMs =
       timeLimit && timeLimit > 0
         ? Math.min(timeLimit, CLIPBOARD_READY_WAIT_MS)

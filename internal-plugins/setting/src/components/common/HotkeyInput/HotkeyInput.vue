@@ -7,6 +7,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue'
 import { useToast } from '@/components/common/Toast'
+import { useEscapeHandler } from '@/composables'
 
 interface Props {
   modelValue: string
@@ -167,6 +168,22 @@ function stopRecording(): void {
   document.removeEventListener('keydown', handleKeyDown)
   document.removeEventListener('keyup', handleKeyUp)
 }
+
+/**
+ * 取消快捷键录制，避免 ESC 被误记录为可保存的快捷键。
+ * @param _event 当前键盘事件
+ * @returns 已消费 ESC 事件
+ */
+function handleEscapeWhileRecording(_event: KeyboardEvent): boolean {
+  stopRecording()
+  return true
+}
+
+// 录制状态优先于编辑面板，ESC 先取消录制再允许后续返回。
+useEscapeHandler(handleEscapeWhileRecording, {
+  enabled: () => isRecording.value,
+  priority: 200
+})
 
 function clearDoubleTapTimer(): void {
   if (doubleTapTimer.value) {

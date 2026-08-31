@@ -25,8 +25,15 @@ export interface UsePluginDetailOptions {
   showCommands?: boolean
   /** 是否显示插件数据 Tab */
   showData?: boolean
+  /** 详情面板首次展示的标签。 */
+  initialTab?: TabId
 }
 
+/**
+ * 管理插件详情面板的标签、README、数据和操作状态。
+ * @param options 详情面板功能开关和插件响应式引用。
+ * @returns 插件详情面板使用的响应式状态和操作方法。
+ */
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 export function usePluginDetail(options: UsePluginDetailOptions) {
   const {
@@ -35,7 +42,8 @@ export function usePluginDetail(options: UsePluginDetailOptions) {
     showDetail = true,
     showComments = false,
     showCommands = true,
-    showData = true
+    showData = true,
+    initialTab = 'detail'
   } = options
   const { success, error, confirm, confirmWithExtra } = useToast()
 
@@ -182,7 +190,7 @@ export function usePluginDetail(options: UsePluginDetailOptions) {
   }
 
   // Tab 状态
-  const activeTab = ref<TabId>('detail')
+  const activeTab = ref<TabId>(initialTab)
 
   // README 状态
   const readmeContent = ref<string>('')

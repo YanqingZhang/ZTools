@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, shell } from 'electron'
+import { BrowserWindow, ipcMain, session, shell } from 'electron'
 import { readFile } from 'fs/promises'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -10,8 +10,41 @@ import pluginDeviceAPI from '../plugin/device'
 import { defaultAccountImportService } from '../../core/storage/defaultAccountImportService'
 import activityHeartbeatService from '../../core/activity/heartbeatService'
 import { cacheUserProfile } from '../../core/account/userProfileStore'
-import { coordinateTokenRefresh } from '../../core/sync/tokenRefreshCoordinator'
+import {
+  clearOfficialAccountSession,
+  loadOfficialAccountSession,
+  onOfficialAccountInvalidated,
+  refreshOfficialAccountTokens,
+  saveOfficialAccountSession
+} from '../../core/account/officialAccountService'
+import { onSyncCredentialsInvalidated } from '../../core/sync/syncAuthTokenService'
+import {
+  clearPrivateSyncSession,
+  loadPrivateSyncSession,
+  loadSyncProfile,
+  migrateLegacySyncConfig,
+  resolveSyncRuntimeConfig,
+  savePrivateSyncSession,
+  saveSyncProfile,
+  type SyncProfile
+} from '../../core/sync/syncProfileService'
+import { OFFICIAL_SYNC_SERVER_URL } from '../../../shared/syncServerUrl'
+import {
+  AFDIAN_PAYMENT_SELECT_WECHAT_SCRIPT,
+  isAllowedAfdianCheckoutURL
+} from '../../core/afdianPayment.js'
+import officialAIService from '../../core/officialAIService.js'
 import type { PluginManager } from '../../managers/pluginManager'
+
+// ZTools 已经确定了赞助金额和月份，支付页只保留订单信息、支付方式和提交按钮。
+// 这些选择器对应爱发电收银台的金额/月份选择组件，样式也会覆盖后续动态渲染的节点。
+const AFDIAN_PAYMENT_HIDE_AMOUNT_CSS = `
+.vm-p-level,
+.pick-month-box,
+.quick-time-select {
+  display: none !important;
+}
+`
 
 /**
  * 同步 API（WebSocket 版）
@@ -19,17 +52,29 @@ import type { PluginManager } from '../../managers/pluginManager'
 export class SyncAPI {
   private syncClient: SyncClient | null = null
   private pluginManager: PluginManager | null = null
+  private mainWindow: BrowserWindow | null = null
+  private paymentWindow: BrowserWindow | null = null
   private lastSyncTimeSave: Promise<void> = Promise.resolve()
   private lastPersistedSyncTime = 0
   private statusNotifyTimer: ReturnType<typeof setTimeout> | null = null
+  private stopCredentialsInvalidatedListener: (() => void) | null = null
+  private stopOfficialAccountInvalidatedListener: (() => void) | null = null
+  private storageReload: Promise<void> = Promise.resolve()
 
+  /**
+   * 初始化同步客户端、IPC 和账号凭据状态监听。
+   * @param mainWindow 主窗口实例；当前同步通知直接发送到设置插件。
+   * @param pluginManager 插件管理器，用于向设置插件发送状态更新。
+   * @returns 无返回值。
+   */
   public init(mainWindow?: BrowserWindow, pluginManager?: PluginManager): void {
-    void mainWindow
+    this.mainWindow = mainWindow || null
     this.pluginManager = pluginManager || null
     this.recreateSyncClient()
     this.setupIPC()
     this.registerStorageSwitchListener()
     this.registerLocalChangeListener()
+    this.registerCredentialsInvalidatedListener()
 
     // 自动启动同步
     this.autoStart().catch((error) => {
@@ -37,12 +82,34 @@ export class SyncAPI {
     })
   }
 
+  /**
+   * 监听统一刷新服务确认的登录失效，并停止同步及通知设置界面清理旧登录态。
+   * @returns 无返回值。
+   */
+  private registerCredentialsInvalidatedListener(): void {
+    this.stopCredentialsInvalidatedListener?.()
+    this.stopCredentialsInvalidatedListener = onSyncCredentialsInvalidated(() => {
+      this.syncClient?.stop()
+      this.sendToSettingPlugin('sync:status-changed', {
+        state: 'error',
+        lastError: '登录状态已失效，请重新登录',
+        credentialsInvalidated: true,
+        refresh: true
+      })
+    })
+    this.stopOfficialAccountInvalidatedListener?.()
+    this.stopOfficialAccountInvalidatedListener = onOfficialAccountInvalidated(() => {
+      this.sendToSettingPlugin('sync:status-changed', {
+        accountCredentialsInvalidated: true,
+        refresh: true
+      })
+    })
+  }
+
   private async autoStart(): Promise<void> {
-    const config = await this.loadConfig()
-    this.switchAccountForConfig(config)
-    if (config?.enabled) {
-      this.syncClient!.start(config)
-    }
+    // 先完成旧混合配置拆分，再解析当前数据空间的同步运行配置。
+    await migrateLegacySyncConfig()
+    await this.restartForCurrentDataSpace()
   }
 
   private recreateSyncClient(): void {
@@ -73,20 +140,32 @@ export class SyncAPI {
     })
   }
 
-  private switchAccountForConfig(config?: Pick<SyncConfig, 'username'> | null): void {
-    const nextUid = config?.username?.trim() || null
-    if (nextUid === storageManager.getCurrentAccountUid()) return
-    storageManager.switchAccount(nextUid)
-    this.recreateSyncClient()
-  }
-
+  /**
+   * 监听官方账号导致的数据空间切换，并为新数据空间重建同步客户端。
+   * @returns 无返回值。
+   */
   private registerStorageSwitchListener(): void {
     storageManager.on('account-switched', () => {
       this.sendToSettingPlugin('sync:account-storage-changed', {
         username: storageManager.getCurrentAccountUid()
       })
-      this.scheduleStatusChanged()
+      this.storageReload = this.storageReload
+        .then(() => this.restartForCurrentDataSpace())
+        .catch((error) => {
+          console.error('[Sync API] 数据空间切换后重启同步失败:', error)
+        })
     })
+  }
+
+  /**
+   * 停止旧数据空间同步，并使用当前数据空间配置重新创建客户端。
+   * @returns 同步客户端重建和可选启动完成后的 Promise。
+   */
+  private async restartForCurrentDataSpace(): Promise<void> {
+    this.recreateSyncClient()
+    const config = await this.loadConfig()
+    if (config?.enabled) this.syncClient!.start(config)
+    this.scheduleStatusChanged()
   }
 
   private registerLocalChangeListener(): void {
@@ -100,10 +179,7 @@ export class SyncAPI {
 
   private async loadConfig(): Promise<SyncConfig | null> {
     try {
-      const doc = await lmdbInstance.promises.get('SYNC/config')
-      if (!doc?.data) return null
-
-      return doc.data as SyncConfig
+      return await resolveSyncRuntimeConfig()
     } catch {
       return null
     }
@@ -121,16 +197,7 @@ export class SyncAPI {
   }
 
   private async persistLastSyncTime(time: number): Promise<void> {
-    const existingDoc = await lmdbInstance.promises.get('SYNC/config')
-    if (!existingDoc?.data) return
-    await lmdbInstance.promises.put({
-      _id: 'SYNC/config',
-      _rev: existingDoc._rev,
-      data: {
-        ...existingDoc.data,
-        lastSyncTime: time
-      }
-    })
+    await saveSyncProfile({ lastSyncTime: time })
     this.sendStatusPatch({ lastSyncTime: time })
     this.scheduleStatusChanged()
   }
@@ -159,18 +226,13 @@ export class SyncAPI {
     }, 250)
   }
 
+  /**
+   * 按当前同步目标的 checkpoint 统计待确认文档数量。
+   * @returns 待同步唯一文档数量。
+   */
   private async getUnsyncedCount(): Promise<number> {
-    let count = 0
-    for (const prefix of SYNC_PREFIXES) {
-      const docs = await lmdbInstance.promises.allDocs(prefix)
-      for (const doc of docs) {
-        const meta = await lmdbInstance.promises.getSyncMeta(doc._id)
-        if (!meta || meta._cloudSynced !== true) {
-          count++
-        }
-      }
-    }
-    return count
+    const config = await this.loadConfig()
+    return this.syncClient?.getPendingDocumentCount(config) || 0
   }
 
   private async getConflictCount(): Promise<number> {
@@ -188,21 +250,67 @@ export class SyncAPI {
   }
 
   private async getSyncStatus(): Promise<Record<string, unknown>> {
-    const config = await this.loadConfig()
-    const unsyncedCount = await this.getUnsyncedCount()
+    const profile = await loadSyncProfile()
+    const config = await resolveSyncRuntimeConfig(profile)
+    const officialAccount = await loadOfficialAccountSession()
+    const privateSession = await loadPrivateSyncSession()
+    const unsyncedCount = this.syncClient?.getPendingDocumentCount(config) || 0
     const conflictCount = await this.getConflictCount()
     return {
       config,
+      profile,
       state: this.syncClient?.getState() || 'disconnected',
       loggedIn: Boolean(config?.token),
       username: config?.username || '',
       lastSyncTime: config?.lastSyncTime || 0,
       unsyncedCount,
       conflictCount,
-      retryStatus: this.syncClient?.getRetryStatus() || null
+      retryStatus: this.syncClient?.getRetryStatus() || null,
+      officialAccount: {
+        loggedIn: Boolean(officialAccount?.token),
+        username: officialAccount?.username || ''
+      },
+      privateSession: {
+        loggedIn: Boolean(privateSession?.token),
+        serverUrl: privateSession?.serverUrl || '',
+        username: privateSession?.username || ''
+      }
     }
   }
 
+  /**
+   * 注销私服会话，并在私服是当前目标时先关闭同步配置和客户端。
+   * @returns 注销操作结果；失败时包含可展示的错误信息。
+   */
+  private async logoutPrivateSession(): Promise<{ success: boolean; error?: string }> {
+    try {
+      const profile = await loadSyncProfile()
+
+      // 注销活动私服前先持久化关闭状态，避免应用重启后尝试使用已清理的凭据。
+      if (profile.provider === 'private') {
+        await saveSyncProfile({
+          provider: 'private',
+          enabled: false,
+          serverUrl: profile.serverUrl,
+          syncInterval: profile.syncInterval
+        })
+        this.syncClient?.stop()
+      }
+
+      // 只清除令牌，保留服务器地址和用户名供下次登录预填。
+      await clearPrivateSyncSession()
+      this.scheduleStatusChanged()
+      activityHeartbeatService.runNow()
+      return { success: true }
+    } catch (error: any) {
+      return { success: false, error: error.message }
+    }
+  }
+
+  /**
+   * 注册同步、认证和官方账号管理使用的主进程 IPC 处理器。
+   * @returns 无返回值。
+   */
   private setupIPC(): void {
     // 测试 WebSocket 连接
     ipcMain.handle('sync:test-connection', async (_event, config: SyncConfig) => {
@@ -244,6 +352,166 @@ export class SyncAPI {
       }
     })
 
+    ipcMain.handle('account:get-session', async () => {
+      try {
+        const session = await loadOfficialAccountSession()
+        return { success: true, session }
+      } catch (error: any) {
+        return { success: false, error: error.message }
+      }
+    })
+
+    ipcMain.handle(
+      'account:login',
+      async (
+        _event,
+        params: { username: string; password: string; captchaVerifyParam?: string }
+      ) => {
+        try {
+          const login = await this.authenticate({
+            serverUrl: OFFICIAL_SYNC_SERVER_URL,
+            ...params
+          })
+          if (!login.success || !login.token) return login
+
+          // 官方账号是本地数据空间唯一身份来源，登录后切换到对应账号数据库。
+          await saveOfficialAccountSession({
+            username: params.username,
+            token: login.token,
+            refreshToken: login.refreshToken
+          })
+          storageManager.switchAccount(params.username)
+          activityHeartbeatService.runNow()
+          return login
+        } catch (error: any) {
+          return { success: false, error: error.message }
+        }
+      }
+    )
+
+    ipcMain.handle(
+      'account:save-session',
+      async (_event, params: { username: string; token: string; refreshToken?: string }) => {
+        try {
+          await saveOfficialAccountSession(params)
+          storageManager.switchAccount(params.username)
+          activityHeartbeatService.runNow()
+          return { success: true }
+        } catch (error: any) {
+          return { success: false, error: error.message }
+        }
+      }
+    )
+
+    ipcMain.handle('account:logout', async () => {
+      try {
+        await clearOfficialAccountSession()
+        storageManager.switchAccount(null)
+        activityHeartbeatService.runNow()
+        return { success: true }
+      } catch (error: any) {
+        return { success: false, error: error.message }
+      }
+    })
+
+    ipcMain.handle(
+      'account:change-password',
+      async (
+        _event,
+        params: { currentPassword: string; newPassword: string }
+      ): Promise<{ success: boolean; error?: string }> => {
+        try {
+          let config = await this.loadOfficialConfig()
+          if (!config?.serverUrl || !config.token) return { success: false, error: '未登录' }
+          if (!params.currentPassword || !params.newPassword) {
+            return { success: false, error: '请输入当前密码和新密码' }
+          }
+
+          if (process.env.ZTOOLS_E2E !== '1') {
+            // 先提交密码修改请求，服务端会在事务中校验旧密码并撤销全部会话。
+            const send = (activeConfig: SyncConfig): Promise<Response> =>
+              fetch(`${this.syncServerUrlToHttp(activeConfig.serverUrl)}/api/account/password`, {
+                method: 'PUT',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${activeConfig.token}`
+                },
+                body: JSON.stringify(params)
+              })
+            let response = await send(config)
+            if (response.status === 401 && config.refreshToken) {
+              // 仅在刷新结果仍属于原账号时重试，避免账号切换期间误操作。
+              const refreshed = await this.refreshOfficialToken(config)
+              if (refreshed) {
+                config = refreshed
+                response = await send(config)
+              }
+            }
+            const data = await response.json()
+            if (!response.ok) return { success: false, error: data.error || '修改密码失败' }
+          }
+
+          // 密码变更会使当前 token 失效，退出同步但保留本地账户 LMDB 数据。
+          this.syncClient?.stop()
+          await clearOfficialAccountSession()
+          storageManager.switchAccount(null)
+          activityHeartbeatService.runNow()
+          return { success: true }
+        } catch (error: any) {
+          return { success: false, error: error.message || '修改密码失败' }
+        }
+      }
+    )
+
+    ipcMain.handle('account:delete', async () => {
+      try {
+        let config = await this.loadOfficialConfig()
+        if (!config?.serverUrl || !config.token) {
+          return { success: false, error: '未登录' }
+        }
+        const accountUid = config.username?.trim()
+        if (!accountUid || storageManager.getCurrentAccountUid() !== accountUid) {
+          return { success: false, error: '当前账号与本地数据空间不一致' }
+        }
+
+        // E2E 只验证隔离实例中的界面与本地退出流程，不访问真实官方账号。
+        if (process.env.ZTOOLS_E2E !== '1') {
+          /**
+           * 使用当前官方账号凭据请求删除服务端账号。
+           * @param activeConfig 本次请求使用的官方账号配置。
+           * @returns 服务端删除账号响应。
+           */
+          const send = (activeConfig: SyncConfig): Promise<Response> =>
+            fetch(`${this.syncServerUrlToHttp(activeConfig.serverUrl)}/api/account`, {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${activeConfig.token}` }
+            })
+
+          let response = await send(config)
+          if (response.status === 401 && config.refreshToken) {
+            const refreshed = await this.refreshOfficialToken(config)
+            if (refreshed) {
+              config = refreshed
+              response = await send(config)
+            }
+          }
+          const data = await response.json()
+          if (!response.ok) {
+            return { success: false, error: data.error || '删除账号失败' }
+          }
+        }
+
+        // 服务端删除成功后停止当前同步，再清理登录态和该账号的本地数据空间。
+        this.syncClient?.stop()
+        await clearOfficialAccountSession()
+        storageManager.deleteCurrentAccount(accountUid)
+        activityHeartbeatService.runNow()
+        return { success: true }
+      } catch (error: any) {
+        return { success: false, error: error.message }
+      }
+    })
+
     // 登录/注册（自动：不存在则创建，存在则验证密码）
     ipcMain.handle(
       'sync:login',
@@ -257,59 +525,46 @@ export class SyncAPI {
         }
       ) => {
         try {
-          // 从 ws:// 转换为 http:// 用于 REST API
-          const httpUrl = this.syncServerUrlToHttp(params.serverUrl)
-
-          const response = await fetch(`${httpUrl}/api/auth`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              uid: params.username,
-              password: params.password,
-              captchaVerifyParam: params.captchaVerifyParam
-            })
-          })
-
-          const data = await response.json()
-          if (!response.ok) {
-            return { success: false, error: data.error || '认证失败' }
-          }
-
-          return {
-            success: true,
-            token: data.token,
-            refreshToken: data.refreshToken,
-            isNew: data.isNew
-          }
+          return await this.authenticate(params)
         } catch (error: any) {
           return { success: false, error: error.message }
         }
       }
     )
 
+    ipcMain.handle(
+      'sync:login-private',
+      async (_event, params: { serverUrl: string; username: string; password: string }) => {
+        try {
+          const login = await this.authenticate(params)
+          if (!login.success || !login.token) return login
+          // 私服用户名只用于远端认证，绝不调用 storageManager.switchAccount。
+          await savePrivateSyncSession({
+            serverUrl: params.serverUrl,
+            username: params.username,
+            token: login.token,
+            refreshToken: login.refreshToken || ''
+          })
+          return login
+        } catch (error: any) {
+          return { success: false, error: error.message }
+        }
+      }
+    )
+
+    ipcMain.handle('sync:logout-private', () => this.logoutPrivateSession())
+
     // 保存同步配置
-    ipcMain.handle('sync:save-config', async (_event, config: SyncConfig) => {
+    ipcMain.handle('sync:save-config', async (_event, config: Partial<SyncProfile>) => {
       try {
-        if (!config.deviceId) {
-          config.deviceId = pluginDeviceAPI.getDeviceIdPublic()
-        }
-
-        const existingDoc = await lmdbInstance.promises.get('SYNC/config')
-        const existingConfig = existingDoc?.data || {}
-        const nextConfig = {
-          ...existingConfig,
+        const profile = await saveSyncProfile({
           ...config,
-          lastSyncTime: config.lastSyncTime || existingConfig.lastSyncTime || 0
-        }
-        await lmdbInstance.promises.put({
-          _id: 'SYNC/config',
-          _rev: existingDoc?._rev,
-          data: nextConfig
+          deviceId: config.deviceId || pluginDeviceAPI.getDeviceIdPublic()
         })
+        const nextConfig = await resolveSyncRuntimeConfig(profile)
 
-        // 重新启动/停止同步
+        // 同步配置只重启当前数据空间客户端，不再根据远端用户名切换本地数据库。
         this.syncClient?.stop()
-        this.switchAccountForConfig(nextConfig)
         if (nextConfig.enabled) {
           this.syncClient!.start(nextConfig)
         }
@@ -325,8 +580,8 @@ export class SyncAPI {
     // 获取同步配置
     ipcMain.handle('sync:get-config', async () => {
       try {
-        const config = await this.loadConfig()
-        return { success: true, config }
+        const profile = await loadSyncProfile()
+        return { success: true, config: profile }
       } catch (error: any) {
         return { success: false, error: error.message }
       }
@@ -357,7 +612,9 @@ export class SyncAPI {
       try {
         const config = await this.loadConfig()
         this.syncClient?.stop()
-        const result = defaultAccountImportService.importToCurrentAccount(config?.username)
+        const result = defaultAccountImportService.importToCurrentAccount(
+          storageManager.getCurrentAccountUid()
+        )
         this.recreateSyncClient()
         if (config?.enabled) {
           this.syncClient!.start(config)
@@ -371,8 +628,7 @@ export class SyncAPI {
 
     ipcMain.handle('sync:skip-default-import', async () => {
       try {
-        const config = await this.loadConfig()
-        defaultAccountImportService.skip(config?.username)
+        defaultAccountImportService.skip(storageManager.getCurrentAccountUid())
         this.scheduleStatusChanged()
         return { success: true }
       } catch (error: any) {
@@ -382,9 +638,21 @@ export class SyncAPI {
 
     ipcMain.handle('sync:get-account-stats', async () => {
       try {
-        let config = await this.loadConfig()
+        let config = await this.loadOfficialConfig()
         if (!config?.serverUrl || !config.token) {
           return { success: false, error: '未登录' }
+        }
+        // E2E 使用隔离凭据，不访问或刷新真实官方账号。
+        if (process.env.ZTOOLS_E2E === '1') {
+          return {
+            success: true,
+            stats: {
+              documentCount: 0,
+              attachmentCount: 0,
+              storageBytes: 0,
+              monthlyTraffic: 0
+            }
+          }
         }
         let response = await fetch(
           `${this.syncServerUrlToHttp(config.serverUrl)}/api/console/client/stats`,
@@ -393,7 +661,7 @@ export class SyncAPI {
           }
         )
         if (response.status === 401 && config.refreshToken) {
-          const refreshed = await this.refreshToken(config)
+          const refreshed = await this.refreshOfficialToken(config)
           if (refreshed) {
             config = refreshed
             response = await fetch(
@@ -414,11 +682,97 @@ export class SyncAPI {
       }
     })
 
+    ipcMain.handle('sync:get-account-credits', async () => {
+      try {
+        return { success: true, credits: await officialAIService.getCredits() }
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '获取 AI 积分失败'
+        }
+      }
+    })
+
+    ipcMain.handle('sync:get-ai-checkin-status', async () => {
+      try {
+        return { success: true, checkin: await officialAIService.getCheckinStatus() }
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '获取签到状态失败'
+        }
+      }
+    })
+
+    ipcMain.handle('sync:ai-checkin', async () => {
+      try {
+        return { success: true, checkin: await officialAIService.checkin() }
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '签到失败'
+        }
+      }
+    })
+
+    ipcMain.handle('sync:create-ai-recharge-order', async (_event, amount: string) => {
+      try {
+        return { success: true, order: await officialAIService.createRechargeOrder(amount) }
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '创建赞助订单失败'
+        }
+      }
+    })
+
+    ipcMain.handle('sync:get-ai-recharge-order', async (_event, orderId: string) => {
+      try {
+        return { success: true, order: await officialAIService.getRechargeOrder(orderId) }
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '查询赞助订单失败'
+        }
+      }
+    })
+
+    ipcMain.handle('sync:open-ai-recharge-url', async (_event, paymentUrl: string) => {
+      try {
+        await this.openAfdianPaymentURL(paymentUrl)
+        return { success: true }
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '打开支付页面失败'
+        }
+      }
+    })
+
+    ipcMain.handle('sync:close-ai-recharge-window', () => {
+      try {
+        this.closeAfdianPaymentWindow()
+        return { success: true }
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '关闭支付窗口失败'
+        }
+      }
+    })
+
     ipcMain.handle('sync:get-account-profile', async () => {
       try {
-        let config = await this.loadConfig()
+        let config = await this.loadOfficialConfig()
         if (!config?.serverUrl || !config.token) {
           return { success: false, error: '未登录' }
+        }
+        // 隔离 E2E 使用本地模拟资料，禁止读取线上账号。
+        if (process.env.ZTOOLS_E2E === '1') {
+          return {
+            success: true,
+            profile: { uid: config.username || '', nickname: '', avatarUrl: '' }
+          }
         }
         let response = await fetch(
           `${this.syncServerUrlToHttp(config.serverUrl)}/api/account/profile`,
@@ -427,7 +781,7 @@ export class SyncAPI {
           }
         )
         if (response.status === 401 && config.refreshToken) {
-          const refreshed = await this.refreshToken(config)
+          const refreshed = await this.refreshOfficialToken(config)
           if (refreshed) {
             config = refreshed
             response = await fetch(
@@ -452,7 +806,7 @@ export class SyncAPI {
 
     ipcMain.handle('sync:upload-account-avatar', async (_event, avatarPath: string) => {
       try {
-        let config = await this.loadConfig()
+        let config = await this.loadOfficialConfig()
         if (!config?.serverUrl || !config.token) {
           return { success: false, error: '未登录' }
         }
@@ -469,7 +823,7 @@ export class SyncAPI {
         }
         let response = await send(config)
         if (response.status === 401 && config.refreshToken) {
-          const refreshed = await this.refreshToken(config)
+          const refreshed = await this.refreshOfficialToken(config)
           if (refreshed) {
             config = refreshed
             response = await send(config)
@@ -536,7 +890,7 @@ export class SyncAPI {
       }
     })
 
-    // 将本地同步状态重置为未同步：不删除文档，只清同步进度和本地云端标记
+    // 重置当前目标的本地同步进度，不删除文档、附件或其他服务器 checkpoint。
     ipcMain.handle('sync:reset-local-sync-state', async () => {
       try {
         const config = await this.loadConfig()
@@ -699,20 +1053,28 @@ export class SyncAPI {
       'sync:update-nickname',
       async (
         _event,
-        params: { serverUrl: string; token: string; nickname: string }
+        params: { nickname: string }
       ): Promise<{ success: boolean; error?: string; profile?: any }> => {
         try {
-          const response = await fetch(
-            `${this.syncServerUrlToHttp(params.serverUrl)}/api/account/nickname`,
-            {
+          let config = await this.loadOfficialConfig()
+          if (!config?.token) return { success: false, error: '未登录' }
+          const send = (activeConfig: SyncConfig): Promise<Response> =>
+            fetch(`${this.syncServerUrlToHttp(activeConfig.serverUrl)}/api/account/nickname`, {
               method: 'PUT',
               headers: {
                 'Content-Type': 'application/json',
-                Authorization: `Bearer ${params.token}`
+                Authorization: `Bearer ${activeConfig.token}`
               },
               body: JSON.stringify({ nickname: params.nickname })
+            })
+          let response = await send(config)
+          if (response.status === 401 && config.refreshToken) {
+            const refreshed = await this.refreshOfficialToken(config)
+            if (refreshed) {
+              config = refreshed
+              response = await send(config)
             }
-          )
+          }
           const data = await response.json()
           if (!response.ok) {
             return { success: false, error: data.error || '更新昵称失败' }
@@ -727,34 +1089,204 @@ export class SyncAPI {
     )
   }
 
+  /**
+   * 调用指定同步服务的账号密码认证接口。
+   * @param params 服务地址、用户名、密码和可选验证码参数。
+   * @returns 登录 token 或认证错误。
+   */
+  private async authenticate(params: {
+    serverUrl: string
+    username: string
+    password: string
+    captchaVerifyParam?: string
+  }): Promise<{
+    success: boolean
+    token?: string
+    refreshToken?: string
+    isNew?: boolean
+    error?: string
+  }> {
+    const response = await fetch(`${this.syncServerUrlToHttp(params.serverUrl)}/api/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        uid: params.username,
+        password: params.password,
+        captchaVerifyParam: params.captchaVerifyParam
+      })
+    })
+    const data = await response.json()
+    if (!response.ok) return { success: false, error: data.error || '认证失败' }
+    return {
+      success: true,
+      token: data.token,
+      refreshToken: data.refreshToken,
+      isNew: data.isNew
+    }
+  }
+
+  /**
+   * 将 WebSocket 服务地址转换为 HTTP API 地址。
+   * @param serverUrl WebSocket 服务地址。
+   * @returns 对应的 HTTP 或 HTTPS 地址。
+   */
   private syncServerUrlToHttp(serverUrl: string): string {
     return serverUrl.replace(/^ws:\/\//, 'http://').replace(/^wss:\/\//, 'https://')
   }
 
-  private async refreshToken(config: SyncConfig): Promise<SyncConfig | null> {
+  /**
+   * 创建受控的独立窗口打开服务端签发的爱发电收银台，并隐藏 ZTools 主窗口。
+   * @param paymentUrl 服务端充值订单返回的收银台链接。
+   * @returns 系统接受打开请求后结束的 Promise。
+   * @throws 链接不符合固定爱发电收银台格式或系统无法打开链接时抛出错误。
+   */
+  private async openAfdianPaymentURL(paymentUrl: string): Promise<void> {
+    if (!isAllowedAfdianCheckoutURL(paymentUrl)) throw new Error('支付链接无效')
+    // E2E 保留隐藏窗口的真实行为，但不创建网络窗口或影响用户环境。
+    if (process.env.ZTOOLS_E2E === '1') {
+      this.mainWindow?.hide()
+      return
+    }
+
+    // 复用已有支付窗口，避免用户重复点击生成多个收银台窗口。
+    if (this.paymentWindow && !this.paymentWindow.isDestroyed()) {
+      this.paymentWindow.show()
+      this.paymentWindow.focus()
+      this.mainWindow?.hide()
+      await this.paymentWindow.loadURL(paymentUrl)
+      await this.applyAfdianPaymentStyles(this.paymentWindow)
+      await this.selectAfdianWechatPayment(this.paymentWindow)
+      return
+    }
+
+    const paymentSession = session.fromPartition('persist:ztools-afdian-payment')
+
+    const paymentWindow = new BrowserWindow({
+      width: 480,
+      height: 760,
+      minWidth: 400,
+      minHeight: 600,
+      show: false,
+      title: '赞助送积分',
+      autoHideMenuBar: true,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        // 使用持久化且独立的分区，保留爱发电登录状态并避免和其他页面共享 Cookie。
+        session: paymentSession
+      }
+    })
+    this.paymentWindow = paymentWindow
+    paymentWindow.on('closed', () => {
+      if (this.paymentWindow === paymentWindow) this.paymentWindow = null
+    })
+    // 支付页只允许在爱发电站内打开新页面，避免外部页面借窗口跳转任意地址。
+    paymentWindow.webContents.setWindowOpenHandler(({ url }) => {
+      try {
+        const parsed = new URL(url)
+        return parsed.protocol === 'https:' && parsed.hostname === 'ifdian.net'
+          ? { action: 'allow' }
+          : { action: 'deny' }
+      } catch {
+        return { action: 'deny' }
+      }
+    })
+
+    // 先显示空白/加载中的支付窗口，避免网络或爱发电首屏加载较慢时用户误以为没有响应。
+    paymentWindow.show()
+    paymentWindow.focus()
+    this.mainWindow?.hide()
+
+    try {
+      await paymentWindow.loadURL(paymentUrl)
+      await this.applyAfdianPaymentStyles(paymentWindow)
+      await this.selectAfdianWechatPayment(paymentWindow)
+    } catch (error) {
+      if (!paymentWindow.isDestroyed()) paymentWindow.destroy()
+      if (this.paymentWindow === paymentWindow) this.paymentWindow = null
+      // 页面加载失败时恢复主窗口，确保用户仍能看到错误提示并重试。
+      this.mainWindow?.show()
+      throw error
+    }
+  }
+
+  /**
+   * 隐藏爱发电收银台中可修改金额和月份的控件，避免与 ZTools 已选订单信息不一致。
+   * @param paymentWindow 爱发电支付窗口
+   * @returns 样式注入完成后结束；注入失败时仅记录警告并继续支付流程
+   */
+  private async applyAfdianPaymentStyles(paymentWindow: BrowserWindow): Promise<void> {
+    try {
+      await paymentWindow.webContents.insertCSS(AFDIAN_PAYMENT_HIDE_AMOUNT_CSS)
+    } catch (error) {
+      // 第三方页面样式注入失败不应阻断订单支付，页面仍可正常打开。
+      console.warn('[Afdian Payment] 隐藏金额控件失败，继续使用支付页面:', error)
+    }
+  }
+
+  /**
+   * 在支付方式异步渲染后选中微信支付，避免用户每次手动切换。
+   * @param paymentWindow 爱发电支付窗口
+   * @returns 脚本提交完成后结束；页面脚本执行失败时仅记录警告
+   */
+  private async selectAfdianWechatPayment(paymentWindow: BrowserWindow): Promise<void> {
+    try {
+      await paymentWindow.webContents.executeJavaScript(AFDIAN_PAYMENT_SELECT_WECHAT_SCRIPT)
+    } catch (error) {
+      // 第三方页面脚本执行失败不阻断支付，保留爱发电默认支付方式。
+      console.warn('[Afdian Payment] 默认选择微信失败，继续使用支付页面:', error)
+    }
+  }
+
+  /**
+   * 关闭当前爱发电支付窗口，并恢复 ZTools 主窗口。
+   * @returns 无返回值；没有支付窗口时也会确保主窗口恢复显示
+   */
+  private closeAfdianPaymentWindow(): void {
+    const paymentWindow = this.paymentWindow
+    if (paymentWindow && !paymentWindow.isDestroyed()) paymentWindow.destroy()
+    this.paymentWindow = null
+    this.mainWindow?.show()
+    this.mainWindow?.focus()
+  }
+
+  /**
+   * 刷新官方账号凭据，并拒绝复用刷新期间切换到的其他账号。
+   * @param config 发起请求时使用的官方账号配置。
+   * @returns 同一账号的最新完整配置；刷新失败、凭据失效或账号切换时返回 null。
+   */
+  private async refreshOfficialToken(config: SyncConfig): Promise<SyncConfig | null> {
     if (!config.refreshToken) return null
-    const tokens = await coordinateTokenRefresh(config.refreshToken, async () => {
-      const response = await fetch(
-        `${this.syncServerUrlToHttp(config.serverUrl)}/api/auth/refresh`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken: config.refreshToken })
-        }
-      )
-      const data = await response.json()
-      if (!response.ok || !data?.token || !data?.refreshToken) return null
-      return { token: data.token, refreshToken: data.refreshToken }
-    })
-    if (!tokens) return null
-    const nextConfig = { ...config, token: tokens.token, refreshToken: tokens.refreshToken }
-    const existingDoc = await lmdbInstance.promises.get('SYNC/config')
-    await lmdbInstance.promises.put({
-      _id: 'SYNC/config',
-      _rev: existingDoc?._rev,
-      data: nextConfig
-    })
-    return nextConfig
+    const result = await refreshOfficialAccountTokens(config.refreshToken)
+    if (result.status !== 'refreshed' && result.status !== 'reused') return null
+    if (
+      !result.session.token ||
+      result.session.serverUrl !== config.serverUrl ||
+      result.session.username !== (config.username || '')
+    ) {
+      return null
+    }
+    return { ...config, ...result.session }
+  }
+
+  /**
+   * 将设备级官方账号会话转换为官方接口调用配置。
+   * @returns 官方账号配置；未登录时返回 null。
+   */
+  private async loadOfficialConfig(): Promise<SyncConfig | null> {
+    const session = await loadOfficialAccountSession()
+    if (!session) return null
+    return {
+      enabled: false,
+      serverUrl: OFFICIAL_SYNC_SERVER_URL,
+      token: session.token,
+      refreshToken: session.refreshToken,
+      syncInterval: 30,
+      lastSyncTime: 0,
+      deviceId: pluginDeviceAPI.getDeviceIdPublic(),
+      username: session.username
+    }
   }
 }
 

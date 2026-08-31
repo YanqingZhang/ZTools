@@ -53,6 +53,7 @@ export class SyncApi {
   private static readonly SEQ_KEY = '_changelog_seq'
   private static readonly REVISION_KEY_PREFIX = 'rev:'
   private static readonly LEGACY_CONFLICT_PREFIX = '\x00'
+  private static readonly LEGACY_CLOUD_SYNC_KEY = '_cloudSynced'
 
   constructor(
     private env: LmdbEnv,
@@ -89,12 +90,34 @@ export class SyncApi {
     return `${SyncApi.REVISION_KEY_PREFIX}${docId}:${rev}`
   }
 
+  /**
+   * 解析文档 metadata，并过滤旧版本遗留的单云端同步状态。
+   * @param metaStr metadata 库中的原始字符串。
+   * @returns 当前版本支持的同步 metadata；无有效数据时返回 null。
+   */
   private parseMeta(metaStr: string | null | undefined): SyncMeta | null {
     if (!metaStr) return null
     if (metaStr.startsWith('{')) {
-      return safeJsonParse(metaStr)
+      const parsed = safeJsonParse(metaStr) as Record<string, unknown> | null
+      if (!parsed) return null
+      delete parsed[SyncApi.LEGACY_CLOUD_SYNC_KEY]
+      return parsed as unknown as SyncMeta
     }
     return { _rev: metaStr, _winningRev: metaStr }
+  }
+
+  /**
+   * 从旧版文档中移除已废弃的单云端同步状态。
+   * @param doc 本地或远端文档。
+   * @returns 不含旧状态字段的文档；输入为空时原样返回。
+   */
+  private stripLegacyCloudSyncState(doc: DbDoc | null): DbDoc | null {
+    if (!doc || !Object.prototype.hasOwnProperty.call(doc, SyncApi.LEGACY_CLOUD_SYNC_KEY)) {
+      return doc
+    }
+    const cleaned = { ...doc }
+    delete cleaned[SyncApi.LEGACY_CLOUD_SYNC_KEY]
+    return cleaned
   }
 
   private saveMeta(id: string, meta: SyncMeta): void {
@@ -268,7 +291,12 @@ export class SyncApi {
     return normalized
   }
 
-  private refreshWinner(docId: string, cloudSynced: boolean): RevisionRecord | null {
+  /**
+   * 根据叶子 revision 重新选择文档 winner 并刷新主文档和 metadata。
+   * @param docId 要刷新的文档 ID。
+   * @returns 选中的 winner；没有 revision 时返回 null。
+   */
+  private refreshWinner(docId: string): RevisionRecord | null {
     const revisions = this.listRevisions(docId)
     const winner = this.chooseWinner(revisions)
 
@@ -284,7 +312,6 @@ export class SyncApi {
       _rev: winner.rev,
       _winningRev: winner.rev,
       _lastModified: winner.timestamp,
-      _cloudSynced: cloudSynced,
       _deleted: winner.deleted,
       _hasConflicts: conflictCount > 0,
       _conflictCount: conflictCount
@@ -296,7 +323,12 @@ export class SyncApi {
     if (winner.deleted || !winner.doc) {
       this.mainDb.removeSync(docId)
     } else {
-      this.mainDb.putSync(docId, safeJsonStringify(winner.doc))
+      const winnerDoc = this.stripLegacyCloudSyncState(winner.doc)
+      if (winnerDoc !== winner.doc) {
+        winner.doc = winnerDoc
+        this.putRevision(winner)
+      }
+      this.mainDb.putSync(docId, safeJsonStringify(winnerDoc))
     }
 
     return winner
@@ -372,49 +404,34 @@ export class SyncApi {
     }
   }
 
+  /**
+   * 读取当前文档 metadata，并惰性清理旧版本遗留字段。
+   * @param id 文档 ID。
+   * @returns 文档 metadata；不存在或无法解析时返回 null。
+   */
   getSyncMeta(id: string): SyncMeta | null {
     try {
-      return this.parseMeta(this.metaDb.get(id))
+      const raw = this.metaDb.get(id)
+      const meta = this.parseMeta(raw)
+      if (meta && typeof raw === 'string' && raw.includes(`"${SyncApi.LEGACY_CLOUD_SYNC_KEY}"`)) {
+        // 旧版本状态在首次读取时惰性清理，避免启动时扫描整个 metadata 库。
+        this.saveMeta(id, meta)
+      }
+      return meta
     } catch (e: any) {
       console.error('[LMDB] getSyncMeta error:', e)
       return null
     }
   }
 
-  updateSyncStatus(id: string, cloudSynced: boolean): void {
-    try {
-      const meta = this.getSyncMeta(id)
-      if (!meta) {
-        console.warn(`[LMDB] updateSyncStatus: 文档不存在 ${id}`)
-        return
-      }
-      meta._cloudSynced = cloudSynced
-      this.saveMeta(id, meta)
-    } catch (e: any) {
-      console.error('[LMDB] updateSyncStatus error:', e)
-    }
-  }
-
-  batchUpdateSyncStatus(ids: string[], cloudSynced: boolean): void {
-    this.env.transactionSync(() => {
-      for (const id of ids) {
-        try {
-          const meta = this.getSyncMeta(id)
-          if (!meta) continue
-          meta._cloudSynced = cloudSynced
-          this.saveMeta(id, meta)
-        } catch {
-          // ignore single failure
-        }
-      }
-    })
-  }
-
   get(id: string): DbDoc | null {
     try {
       const docStr = this.mainDb.get(id)
       if (!docStr) return null
-      return safeJsonParse(docStr)
+      const doc = safeJsonParse(docStr) as DbDoc | null
+      const cleaned = this.stripLegacyCloudSyncState(doc)
+      if (cleaned && cleaned !== doc) this.mainDb.putSync(id, safeJsonStringify(cleaned))
+      return cleaned
     } catch (e: any) {
       console.error('[LMDB] get error:', e)
       return null
@@ -479,7 +496,7 @@ export class SyncApi {
         if (options.retireOtherLeaves) {
           this.retireLeafRevisions(id, newRev)
         }
-        const winner = this.refreshWinner(id, false)
+        const winner = this.refreshWinner(id)
         const seq = this.appendChange({
           seq: 0,
           docId: id,
@@ -557,8 +574,12 @@ export class SyncApi {
           this.mainDb.getRange(rangeOptions)
         )) {
           if (!currentKey.startsWith(prefix)) break
-          const doc = safeJsonParse(docStr)
-          if (doc) results.push(doc)
+          const doc = safeJsonParse(docStr) as DbDoc | null
+          const cleaned = this.stripLegacyCloudSyncState(doc)
+          if (cleaned) {
+            if (cleaned !== doc) this.mainDb.putSync(currentKey, safeJsonStringify(cleaned))
+            results.push(cleaned)
+          }
         }
       }
       return results
@@ -616,7 +637,7 @@ export class SyncApi {
             isLeaf: true
           }
           this.putRevision(revision)
-          const winner = this.refreshWinner(id, false)
+          const winner = this.refreshWinner(id)
           const seq = this.appendChange({
             seq: 0,
             docId: id,
@@ -672,7 +693,7 @@ export class SyncApi {
             isLeaf: true
           }
           this.putRevision(revision)
-          const winner = this.refreshWinner(id, false)
+          const winner = this.refreshWinner(id)
           const seq = this.appendChange({
             seq: 0,
             docId: id,
@@ -806,7 +827,7 @@ export class SyncApi {
         isLeaf: true
       }
       this.putRevision(revision)
-      const winner = this.refreshWinner(id, false)
+      const winner = this.refreshWinner(id)
       const seq = this.appendChange({
         seq: 0,
         docId: id,
@@ -878,7 +899,7 @@ export class SyncApi {
       if (existing && !existing.parentRev && parentRev) {
         this.putRevision({ ...existing, parentRev })
       }
-      const winner = this.refreshWinner(id, true)
+      const winner = this.refreshWinner(id)
       return createSuccessResult(id, winner?.rev || remoteRev)
     }
 
@@ -886,10 +907,11 @@ export class SyncApi {
     const history = this.normalizeRevisionHistory(remoteRev, change.revisionHistory)
     this.ensureRevisionHistoryStubs(id, history, timestamp)
     const parentRev = change.parentRev || history[1] || null
+    const remoteDoc = this.stripLegacyCloudSyncState(change.doc || null)
     const docBody = change.deleted
       ? null
-      : change.doc
-        ? ({ ...change.doc, _rev: remoteRev } as DbDoc)
+      : remoteDoc
+        ? ({ ...remoteDoc, _rev: remoteRev } as DbDoc)
         : null
     this.rememberRemoteAttachmentStubs(docBody)
 
@@ -908,7 +930,7 @@ export class SyncApi {
     if (change.resolution?.retireOtherLeaves) {
       this.retireLeafRevisions(id, remoteRev)
     }
-    const winner = this.refreshWinner(id, true)
+    const winner = this.refreshWinner(id)
     return createSuccessResult(id, winner?.rev || remoteRev)
   }
 
@@ -960,7 +982,7 @@ export class SyncApi {
 
       this.putRevision(nextRevision)
       this.retireLeafRevisions(docId, newRev)
-      const winner = this.refreshWinner(docId, false)
+      const winner = this.refreshWinner(docId)
       const seq = this.appendChange({
         seq: 0,
         docId,

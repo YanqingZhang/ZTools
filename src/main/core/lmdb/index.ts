@@ -36,7 +36,6 @@ export default class LmdbDatabase extends EventEmitter {
     getAttachment: (id: string) => Promise<Uint8Array | null>
     getAttachmentType: (id: string) => Promise<string | null>
     getSyncMeta: (id: string) => Promise<SyncMeta | null>
-    updateSyncStatus: (id: string, cloudSynced: boolean) => Promise<void>
   }
 
   /**
@@ -115,9 +114,7 @@ export default class LmdbDatabase extends EventEmitter {
         this.promiseApi.postAttachment(id, attachment, type),
       getAttachment: (id: string) => this.promiseApi.getAttachment(id),
       getAttachmentType: (id: string) => this.promiseApi.getAttachmentType(id),
-      getSyncMeta: (id: string) => this.promiseApi.getSyncMeta(id),
-      updateSyncStatus: (id: string, cloudSynced: boolean) =>
-        this.promiseApi.updateSyncStatus(id, cloudSynced)
+      getSyncMeta: (id: string) => this.promiseApi.getSyncMeta(id)
     }
   }
 

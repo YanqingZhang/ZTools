@@ -11,6 +11,8 @@ const props = defineProps<{
   isLoading?: boolean
   downloadState?: PluginDownloadState
   isRunning?: boolean
+  initialTab?: TabId
+  targetCommentId?: number | null
 }>()
 
 defineEmits<{
@@ -51,7 +53,7 @@ type CommentParent = {
 }
 
 const { success, error, warning, confirm } = useToast()
-const showComments = ref(false)
+const showComments = ref(props.initialTab === 'comments')
 const comments = ref<CommentItem[]>([])
 const commentsLoading = ref(false)
 const commentsError = ref('')
@@ -65,10 +67,14 @@ const submittingComment = ref(false)
 const likingId = ref<number | null>(null)
 const deletingId = ref<number | null>(null)
 const highlightedCommentId = ref<number | null>(null)
+const pendingAnchorId = ref<number | null>(props.targetCommentId || null)
 const currentUsername = ref('')
 
 onMounted(() => {
   void loadLoginDefaults()
+  if (showComments.value) {
+    nextTick(() => loadComments())
+  }
   window.addEventListener(ACCOUNT_CHANGED_EVENT, handleAccountChanged)
 })
 
@@ -97,6 +103,10 @@ function handleTabSwitch(tabId: TabId): void {
   }
 }
 
+/**
+ * 加载当前插件评论，并在通知跳转场景请求包含目标评论的分页。
+ * @returns 加载完成后的 Promise。
+ */
 async function loadComments(): Promise<void> {
   if (!props.plugin?.name) return
   commentsLoading.value = true
@@ -105,11 +115,18 @@ async function loadComments(): Promise<void> {
     const result = await window.ztools.internal.fetchPluginMarketComments(
       props.plugin.name,
       commentsPage.value,
-      commentsPageSize
+      commentsPageSize,
+      pendingAnchorId.value || 0
     )
     if (result.success && result.data) {
       comments.value = result.data.items || []
       commentsTotal.value = result.data.page?.total || 0
+      commentsPage.value = result.data.page?.page || commentsPage.value
+      const anchorId = pendingAnchorId.value
+      pendingAnchorId.value = null
+      if (anchorId) {
+        nextTick(() => highlightComment(anchorId))
+      }
     } else {
       commentsError.value = result.error || '评论加载失败'
     }
@@ -122,9 +139,9 @@ async function loadComments(): Promise<void> {
 
 async function loadLoginDefaults(): Promise<void> {
   try {
-    const result = await window.ztools.internal.syncGetConfig()
-    if (result.success && result.config) {
-      currentUsername.value = result.config.username || ''
+    const result = await window.ztools.internal.accountGetSession()
+    if (result.success && result.session) {
+      currentUsername.value = result.session.username || ''
     } else {
       currentUsername.value = ''
     }
@@ -306,6 +323,24 @@ function focusParentComment(parentId?: number | null): void {
     }
   }, 1600)
 }
+
+/**
+ * 定位并短暂高亮通知指向的评论。
+ * @param commentId 需要定位的评论标识。
+ * @returns 无返回值。
+ */
+function highlightComment(commentId: number): void {
+  const target = document.getElementById(`plugin-comment-${commentId}`)
+  if (!target) {
+    warning('目标评论已删除或不可见')
+    return
+  }
+  highlightedCommentId.value = commentId
+  target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  window.setTimeout(() => {
+    if (highlightedCommentId.value === commentId) highlightedCommentId.value = null
+  }, 1600)
+}
 </script>
 
 <template>
@@ -319,6 +354,7 @@ function focusParentComment(parentId?: number | null): void {
     :show-data="false"
     :show-size="true"
     :show-download-count="true"
+    :initial-tab="initialTab"
     @back="$emit('back')"
     @open="$emit('open')"
     @download="$emit('download')"

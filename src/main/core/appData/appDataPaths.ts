@@ -2,8 +2,10 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { app } from 'electron'
+import { assertSafePluginArtifactPart } from '../../utils/pluginStorage.js'
 
 export interface AppDataPathOptions {
+  dataRoot?: string
   homeDir?: string
   legacyUserDataPath?: string
 }
@@ -24,8 +26,18 @@ export interface ZToolsDataLayout {
   legacyUserDataPath: string
 }
 
+/**
+ * 获取 ZTools 数据根目录，测试进程可通过显式配置隔离真实用户数据。
+ *
+ * @param options 数据目录解析选项。
+ * @returns ZTools 数据根目录绝对路径。
+ */
 export function getZToolsRoot(options: AppDataPathOptions = {}): string {
-  return path.join(options.homeDir || os.homedir(), '.ztools')
+  return (
+    options.dataRoot ||
+    process.env.ZTOOLS_DATA_ROOT ||
+    path.join(options.homeDir || os.homedir(), '.ztools')
+  )
 }
 
 export function getLmdbRoot(options: AppDataPathOptions = {}): string {
@@ -46,6 +58,30 @@ export function getDefaultAccountLmdbPath(options: AppDataPathOptions = {}): str
 
 export function getPluginsPath(options: AppDataPathOptions = {}): string {
   return path.join(getZToolsRoot(options), 'plugins')
+}
+
+/**
+ * 获取插件数据目录的根容器（存放所有插件的专属数据目录）。
+ *
+ * @param options 数据目录解析选项
+ * @returns 插件数据根目录绝对路径
+ */
+export function getPluginDataRoot(options: AppDataPathOptions = {}): string {
+  return path.join(getZToolsRoot(options), 'plugins-data')
+}
+
+/**
+ * 获取指定插件的专属数据目录（`ztools.getPath('pluginData')` 指向的目录）。
+ * 该目录随插件卸载且勾选「同时删除插件数据」时一并删除，禁止存放插件实体。
+ *
+ * @param pluginName 插件名，用作数据根下的子目录名
+ * @param options 数据目录解析选项
+ * @returns 插件数据目录绝对路径
+ * @throws 插件名不合法（空、`.`、`..`、含分隔符或绝对路径）时抛出异常，避免目录穿越
+ */
+export function getPluginDataPath(pluginName: string, options: AppDataPathOptions = {}): string {
+  assertSafePluginArtifactPart(pluginName, '插件名称')
+  return path.join(getPluginDataRoot(options), pluginName)
 }
 
 export function getAvatarPath(options: AppDataPathOptions = {}): string {

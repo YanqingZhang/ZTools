@@ -7,6 +7,15 @@
         <div class="title">发现新版本 {{ version }}</div>
         <div class="subtitle">ZTools</div>
       </div>
+      <button
+        type="button"
+        class="window-control minimize-button"
+        aria-label="最小化更新窗口"
+        title="最小化"
+        @click="minimizeWindow"
+      >
+        <span aria-hidden="true"></span>
+      </button>
     </div>
 
     <!-- 更新内容 -->
@@ -30,11 +39,51 @@
           ></div>
         </div>
       </div>
-      <div class="footer-actions">
-        <button class="btn cancel" :disabled="isBusy" @click="closeWindow">稍后更新</button>
-        <button class="btn confirm" :disabled="isBusy || !updateInfo" @click="startUpdate">
-          {{ updateInfo?.manualDownloadRequired ? '前往下载' : primaryButtonText }}
-        </button>
+      <div class="footer-main">
+        <div class="source-area">
+          <div v-if="showSourceSelector" class="source-selector">
+            <label class="source-label" for="update-source">下载渠道</label>
+            <div class="source-select-control">
+              <select
+                id="update-source"
+                v-model.number="selectedSourceID"
+                :class="{ 'has-help': selectedSource?.platformName.includes('夸克') }"
+                :disabled="sourceSelectionDisabled"
+                @keydown.stop
+              >
+                <option v-for="source in availableSources" :key="source.id" :value="source.id">
+                  {{ source.platformName }}
+                </option>
+              </select>
+              <button
+                v-if="selectedSource?.platformName.includes('夸克')"
+                type="button"
+                class="source-help"
+                aria-label="查看夸克网盘下载说明"
+                aria-describedby="quark-source-tooltip"
+                @keydown.stop
+              >
+                <span aria-hidden="true">?</span>
+                <span id="quark-source-tooltip" class="source-tooltip" role="tooltip">
+                  通过夸克网盘下载并转存时，ZTools
+                  可能获得少量渠道收益，用于分担服务器和持续维护成本。感谢你的支持。
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="footer-actions">
+          <button
+            class="btn cancel"
+            :disabled="status === 'installing' || isCancelling"
+            @click="handleSecondaryAction"
+          >
+            {{ secondaryButtonText }}
+          </button>
+          <button class="btn confirm" :disabled="isBusy || !selectedSource" @click="startUpdate">
+            {{ primaryButtonText }}
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -44,6 +93,7 @@
 import { marked } from 'marked'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import logo from '../../assets/logo.png'
+import { getDefaultUpdateSourceID, isInAppUpdateSource } from '@shared/updateSource'
 
 interface UpdateInfo {
   version: string
@@ -52,6 +102,15 @@ interface UpdateInfo {
   downloadUrl?: string
   manualDownloadRequired?: boolean
   releaseUrl?: string
+  sources?: UpdateDownloadSource[]
+}
+
+interface UpdateDownloadSource {
+  id: number
+  platformName: string
+  downloadUrl: string
+  isDirect: boolean
+  feedUrl?: string
 }
 
 interface DownloadProgress {
@@ -68,6 +127,8 @@ const downloadProgress = ref(0)
 const transferredBytes = ref(0)
 const totalBytes = ref(0)
 const updateError = ref('')
+const isCancelling = ref(false)
+const selectedSourceID = ref<number | null>(null)
 const acrylicLightOpacity = ref(78)
 const acrylicDarkOpacity = ref(50)
 const stopUpdateListeners: Array<() => void> = []
@@ -89,31 +150,47 @@ const statusText = computed(() => {
   if (status.value === 'installing') return '正在安装更新...'
   return updateError.value || '更新下载失败，请重试'
 })
+const availableSources = computed(() => updateInfo.value?.sources ?? [])
+const selectedSource = computed(
+  () =>
+    availableSources.value.find((source) => source.id === selectedSourceID.value) ??
+    availableSources.value[0]
+)
+const showSourceSelector = computed(() => availableSources.value.length > 1)
+const sourceSelectionDisabled = computed(
+  () => status.value !== 'available' && status.value !== 'error'
+)
 const primaryButtonText = computed(() => {
   if (status.value === 'downloading') return `下载中 ${progressText.value}`
   if (status.value === 'downloaded') return '立即安装'
   if (status.value === 'installing') return '正在安装...'
+  if (selectedSource.value && !isInAppUpdateSource(selectedSource.value)) {
+    return '去下载'
+  }
   if (status.value === 'error') return '重试下载'
-  return '下载并更新'
+  return '下载并安装'
 })
-
+const secondaryButtonText = computed(() => {
+  if (isCancelling.value) return '正在取消...'
+  return status.value === 'downloading' ? '取消下载' : '稍后更新'
+})
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB'
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 /**
- * 执行当前更新操作，便携版仅打开下载页面，安装版进入下载和安装流程。
+ * 使用当前选中的下载渠道执行更新，人工渠道成功打开后关闭更新窗口。
  * @returns 操作处理完成后结束的 Promise。
  */
 const startUpdate = async (): Promise<void> => {
-  if (isBusy.value || !updateInfo.value) return
+  if (isBusy.value || !updateInfo.value || !selectedSource.value) return
 
   updateError.value = ''
   try {
-    // 便携版不进入下载状态，主进程只负责打开对应 Release 页面。
-    if (updateInfo.value.manualDownloadRequired) {
-      const result = await window.ztools.updater.startUpdate()
+    // 人工渠道只打开浏览器，不进入应用内下载状态。
+    if (!isInAppUpdateSource(selectedSource.value)) {
+      const result = await window.ztools.updater.startUpdate(selectedSource.value.id)
       if (!result.success) {
         updateError.value = result.error || '打开下载页面失败'
         status.value = 'error'
@@ -137,7 +214,8 @@ const startUpdate = async (): Promise<void> => {
     downloadProgress.value = 0
     transferredBytes.value = 0
     totalBytes.value = 0
-    const result = await window.ztools.updater.startUpdate()
+    const result = await window.ztools.updater.startUpdate(selectedSource.value.id)
+    if (result.cancelled) return
     if (!result.success) {
       updateError.value = result.error || '下载更新失败'
       status.value = 'error'
@@ -150,15 +228,77 @@ const startUpdate = async (): Promise<void> => {
   }
 }
 
+/**
+ * 取消当前下载，并将窗口恢复为可重新下载的状态。
+ * @returns 取消操作完成后结束的 Promise。
+ */
+const cancelDownload = async (): Promise<void> => {
+  if (status.value !== 'downloading' || isCancelling.value) return
+
+  isCancelling.value = true
+  try {
+    const result = await window.ztools.updater.cancelUpdate()
+    if (!result.success) {
+      // 下载可能恰好完成，只有仍处于下载态时才展示取消失败。
+      if (status.value === 'downloading') {
+        updateError.value = result.error || '取消下载失败'
+        status.value = 'error'
+      }
+      return
+    }
+
+    // 取消后保留版本信息和下载源，方便用户重新发起下载。
+    downloadProgress.value = 0
+    transferredBytes.value = 0
+    totalBytes.value = 0
+    updateError.value = ''
+    status.value = 'available'
+  } catch (error) {
+    updateError.value = error instanceof Error ? error.message : '取消下载失败'
+    status.value = 'error'
+  } finally {
+    isCancelling.value = false
+  }
+}
+
+/**
+ * 根据当前下载状态执行取消下载或关闭窗口。
+ * @returns 操作完成后结束的 Promise。
+ */
+const handleSecondaryAction = async (): Promise<void> => {
+  if (status.value === 'downloading') {
+    await cancelDownload()
+    return
+  }
+  closeWindow()
+}
+
+/**
+ * 在非下载和非安装阶段关闭更新窗口。
+ * @returns 无返回值。
+ */
 const closeWindow = (): void => {
   if (isBusy.value) return
   // 发送 closeWindow 事件给主进程
   window.electron?.ipcRenderer.send('updater:close-window')
 }
 
+/**
+ * 请求主进程最小化更新窗口，同时保留当前更新状态。
+ * @returns 无返回值。
+ */
+const minimizeWindow = (): void => {
+  window.electron?.ipcRenderer.send('updater:minimize-window')
+}
+
+/**
+ * 处理更新窗口键盘操作，下载期间按 Escape 时取消下载。
+ * @param e 键盘事件。
+ * @returns 无返回值。
+ */
 const handleKeydown = (e: KeyboardEvent): void => {
-  if (e.key === 'Escape' && !isBusy.value) {
-    closeWindow()
+  if (e.key === 'Escape' && status.value !== 'installing') {
+    void handleSecondaryAction()
   } else if (e.key === 'Enter' && !isBusy.value) {
     void startUpdate()
   }
@@ -217,6 +357,9 @@ onMounted(() => {
         updateInfo.value = info
         version.value = info.version
         changelog.value = info.changelog
+        if (!info.sources?.some((source) => source.id === selectedSourceID.value)) {
+          selectedSourceID.value = getDefaultUpdateSourceID(info.sources ?? [])
+        }
         if (info.downloadStatus?.status === 'downloaded') status.value = 'downloaded'
         else if (info.downloadStatus?.status === 'downloading') status.value = 'downloading'
       }
@@ -234,6 +377,13 @@ onMounted(() => {
     window.electron.ipcRenderer.on('update-downloaded', () => {
       downloadProgress.value = 100
       status.value = 'downloaded'
+    }),
+    window.electron.ipcRenderer.on('update-download-cancelled', () => {
+      downloadProgress.value = 0
+      transferredBytes.value = 0
+      totalBytes.value = 0
+      updateError.value = ''
+      status.value = 'available'
     }),
     window.electron.ipcRenderer.on('update-download-failed', (data: { error?: string }) => {
       updateError.value = data.error || '更新下载失败，请重试'
@@ -357,6 +507,54 @@ body,
 
 .header-info {
   flex: 1;
+  min-width: 0;
+}
+
+.window-control {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  padding: 0;
+  background: transparent;
+  color: #666;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.window-control:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: #222;
+}
+
+.window-control:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.55);
+  outline-offset: 1px;
+}
+
+.minimize-button span {
+  width: 12px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+@media (prefers-color-scheme: dark) {
+  .window-control {
+    color: #aaa;
+  }
+
+  .window-control:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+  }
 }
 
 .title {
@@ -388,6 +586,30 @@ body,
   padding: 20px 24px;
   font-size: 14px;
   line-height: 1.6;
+}
+
+.changelog :deep(a) {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .changelog :deep(a),
+  .changelog :deep(a:visited) {
+    color: #9ec5ff;
+    text-decoration-color: rgba(158, 197, 255, 0.72);
+  }
+
+  .changelog :deep(a:hover) {
+    color: #c2d9ff;
+    text-decoration-color: currentColor;
+  }
+
+  .changelog :deep(a:focus-visible) {
+    border-radius: 2px;
+    outline: 2px solid rgba(158, 197, 255, 0.78);
+    outline-offset: 2px;
+  }
 }
 
 /* Markdown样式适配 */
@@ -455,9 +677,134 @@ body,
 }
 
 .footer-actions {
+  flex: none;
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 12px;
+}
+
+.footer-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.source-area {
+  min-width: 0;
+  flex: 1;
+}
+
+.source-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.source-select-control {
+  position: relative;
+  flex: none;
+}
+
+.source-label {
+  flex: none;
+  color: #555;
+  font-size: 12px;
+}
+
+.source-selector select {
+  box-sizing: border-box;
+  min-width: 112px;
+  height: 32px;
+  padding: 0 28px 0 10px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.7);
+  color: #333;
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+}
+
+.source-selector select.has-help {
+  padding-right: 48px;
+}
+
+.source-selector select:focus {
+  border-color: #3b82f6;
+}
+
+.source-selector select:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.source-help {
+  position: absolute;
+  top: 50%;
+  right: 27px;
+  z-index: 1;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(0, 0, 0, 0.28);
+  border-radius: 50%;
+  padding: 0;
+  appearance: none;
+  background: transparent;
+  color: #666;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: help;
+  transform: translateY(-50%);
+}
+
+.source-help:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.45);
+  outline-offset: 2px;
+}
+
+.source-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  box-sizing: border-box;
+  width: 250px;
+  padding: 9px 11px;
+  border-radius: 6px;
+  background: rgba(34, 34, 34, 0.96);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-40%, 4px);
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
+}
+
+.source-tooltip::after {
+  content: '';
+  position: absolute;
+  left: 40%;
+  top: 100%;
+  border: 5px solid transparent;
+  border-top-color: rgba(34, 34, 34, 0.96);
+  transform: translateX(-50%);
+}
+
+.source-help:hover .source-tooltip,
+.source-help:focus .source-tooltip {
+  opacity: 1;
+  transform: translate(-40%, 0);
 }
 
 .update-status {
@@ -512,9 +859,25 @@ body,
     border-top: 1px solid rgba(255, 255, 255, 0.06);
     background: rgba(30, 30, 30, 0.5);
   }
+
+  .source-label {
+    color: #bbb;
+  }
+
+  .source-selector select {
+    border-color: rgba(255, 255, 255, 0.14);
+    background: rgba(30, 30, 30, 0.72);
+    color: #e5e5e5;
+  }
+
+  .source-help {
+    border-color: rgba(255, 255, 255, 0.32);
+    color: #bbb;
+  }
 }
 
 .btn {
+  min-width: 92px;
   padding: 8px 20px;
   border-radius: 6px;
   font-size: 13px;
@@ -523,6 +886,7 @@ body,
   transition: all 0.2s;
   border: none;
   outline: none;
+  white-space: nowrap;
   -webkit-app-region: no-drag;
 }
 
@@ -554,6 +918,7 @@ body,
 }
 
 .confirm {
+  min-width: 118px;
   background: #3b82f6;
   color: white;
 }

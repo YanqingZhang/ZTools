@@ -32,11 +32,14 @@
 </template>
 
 <script setup lang="ts">
+import { useEscapeHandler } from '@/composables'
+
 interface Props {
   visible: boolean
   title?: string
   maxWidth?: string
   closeOnOverlay?: boolean
+  closeOnEscape?: boolean
   showHeader?: boolean
   compact?: boolean
   subtitle?: string
@@ -46,6 +49,7 @@ const props = withDefaults(defineProps<Props>(), {
   title: '',
   maxWidth: '420px',
   closeOnOverlay: true,
+  closeOnEscape: true,
   showHeader: true,
   compact: false,
   subtitle: ''
@@ -65,6 +69,19 @@ const handleOverlayClick = (): void => {
   if (!props.closeOnOverlay) return
   close()
 }
+
+/**
+ * 处理弹窗 ESC：关闭可关闭弹窗，否则仅消费事件避免宿主退出插件。
+ * @param _event 当前键盘事件
+ * @returns 已消费 ESC 事件
+ */
+function handleEscape(_event: KeyboardEvent): boolean {
+  if (props.closeOnEscape) close()
+  return true
+}
+
+// 弹窗优先级高于详情面板，保证嵌套弹窗先关闭。
+useEscapeHandler(handleEscape, { enabled: () => props.visible, priority: 300 })
 </script>
 
 <style scoped>

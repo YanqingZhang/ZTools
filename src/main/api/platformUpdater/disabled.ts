@@ -19,6 +19,14 @@ class DisabledPlatformUpdater implements PlatformUpdaterService {
     return { success: false, error: '当前平台不支持应用内更新' }
   }
 
+  /**
+   * 返回当前平台不支持取消应用内更新的结果。
+   * @returns 固定的不支持结果。
+   */
+  public cancelUpdate(): PlatformUpdateActionResult {
+    return { success: false, error: '当前平台不支持应用内更新' }
+  }
+
   public installDownloadedUpdate(): PlatformUpdateActionResult {
     return { success: false, error: '当前平台不支持应用内更新' }
   }

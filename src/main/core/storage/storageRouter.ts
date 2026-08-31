@@ -18,7 +18,6 @@ export class StorageRouter extends EventEmitter {
     getAttachment: (id: string) => Promise<Uint8Array | null>
     getAttachmentType: (id: string) => Promise<any | null>
     getSyncMeta: (id: string) => Promise<SyncMeta | null>
-    updateSyncStatus: (id: string, cloudSynced: boolean) => Promise<void>
   }
 
   private accountDb: LmdbDatabase | null = null
@@ -38,15 +37,7 @@ export class StorageRouter extends EventEmitter {
       postAttachment: async (id, attachment, type) => this.postAttachment(id, attachment, type),
       getAttachment: async (id) => this.getAttachment(id),
       getAttachmentType: async (id) => this.getAttachmentType(id),
-      getSyncMeta: async (id) => this.getSyncMeta(id),
-      updateSyncStatus: async (id, cloudSynced) => {
-        const meta = this.getSyncMeta(id)
-        if (meta) {
-          this.getAccountDb()
-            .getMetaDb()
-            .putSync(id, JSON.stringify({ ...meta, _cloudSynced: cloudSynced }))
-        }
-      }
+      getSyncMeta: async (id) => this.getSyncMeta(id)
     }
   }
 

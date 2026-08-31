@@ -8,7 +8,7 @@ const moduleLoader = require('module') as {
 const preloadPath = require.resolve('../../resources/preload.js')
 const originalLoad = moduleLoader._load
 
-describe('plugin preload getUser bridge', () => {
+describe('plugin preload user bridges', () => {
   const ipcInvoke = vi.fn()
   const ipcOn = vi.fn()
   const ipcSend = vi.fn()
@@ -19,6 +19,12 @@ describe('plugin preload getUser bridge', () => {
   beforeEach(() => {
     delete require.cache[preloadPath]
     ipcInvoke.mockReset()
+    ipcInvoke.mockImplementation((_channel: string, apiName?: string) => {
+      if (apiName === 'getUserTempToken') {
+        return Promise.resolve({ token: 'plugin-token', expiredAt: 1_800_000_000_000 })
+      }
+      return Promise.resolve(undefined)
+    })
     ipcOn.mockReset()
     ipcSend.mockReset()
     ipcSendSync.mockReset().mockImplementation((channel: string, apiName?: string) => {
@@ -65,5 +71,15 @@ describe('plugin preload getUser bridge', () => {
       uid: 'zing'
     })
     expect(ipcSendSync).toHaveBeenCalledWith('plugin.api', 'getUser', undefined)
+  })
+
+  it('exposes getUserTempToken through the asynchronous plugin.api channel', async () => {
+    require(preloadPath)
+
+    await expect((globalThis as any).window.ztools.getUserTempToken()).resolves.toEqual({
+      token: 'plugin-token',
+      expiredAt: 1_800_000_000_000
+    })
+    expect(ipcInvoke).toHaveBeenCalledWith('plugin.api', 'getUserTempToken', undefined)
   })
 })

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { AdaptiveIcon } from '@/components'
+import { useEscapeHandler } from '@/composables'
 import { weightedSearch } from '@/utils'
 import type { ShortcutsSettingCommandTargetOptionBase } from '@/views/ShortcutsSetting/ShortcutsSetting'
 
@@ -132,15 +133,21 @@ function handleBackToPlugins(): void {
 
 /**
  * 处理选择器中的 Esc，优先返回上一级分组列表。
+ * @param _event 当前键盘事件
+ * @returns 已消费 ESC 事件
  */
-function handleSelectorEscape(): void {
+function handleSelectorEscape(_event: KeyboardEvent): boolean {
   if (selectedPluginName.value) {
     handleBackToPlugins()
-    return
+    return true
   }
 
   emit('escape')
+  return true
 }
+
+// 目标选择器优先于详情面板，保证分组级导航先完成返回。
+useEscapeHandler(handleSelectorEscape, { priority: 120 })
 
 /**
  * 将用户选中的目标指令回传给父组件。
@@ -195,13 +202,7 @@ function handleSelectTarget(target: ShortcutsSettingCommandTargetOptionBase): vo
         </button>
       </div>
 
-      <input
-        v-model="selectorQuery"
-        type="text"
-        class="input"
-        :placeholder="selectorPlaceholder"
-        @keyup.escape="handleSelectorEscape"
-      />
+      <input v-model="selectorQuery" type="text" class="input" :placeholder="selectorPlaceholder" />
 
       <div class="selector-list">
         <template v-if="selectedPlugin">

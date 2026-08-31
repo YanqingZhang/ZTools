@@ -1,6 +1,17 @@
 /// <reference types="vite/client" />
 /// <reference types="@ztools-center/ztools-api-types" />
 
+import type { SearchWallpaperConfig } from '@shared/searchWallpaper'
+import type {
+  AiProviderInput,
+  AiProviderMutationResult,
+  AiProviderStore,
+  OfficialAiProviderStatus,
+  OfficialAiCreditAccount,
+  OfficialAiRechargeOrder,
+  AiRemoteModel
+} from '@shared/aiProviderShared'
+
 declare module '*.vue' {
   import type { DefineComponent } from 'vue'
   const component: DefineComponent<Record<string, never>, Record<string, never>, unknown>
@@ -133,7 +144,8 @@ declare global {
         fetchPluginMarketComments: (
           pluginName: string,
           page?: number,
-          pageSize?: number
+          pageSize?: number,
+          anchorId?: number
         ) => Promise<{
           success: boolean
           data?: {
@@ -185,6 +197,47 @@ declare global {
           error?: string
           authRequired?: boolean
         }>
+        notificationSummary: () => Promise<{
+          success: boolean
+          data?: { unreadCount: number; latestId: number; hasMoreUnread: boolean }
+          error?: string
+        }>
+        notificationList: (
+          beforeId?: number,
+          limit?: number,
+          unreadOnly?: boolean
+        ) => Promise<{
+          success: boolean
+          data?: {
+            items: Array<{
+              id: number
+              type: string
+              title: string
+              content: string
+              level: string
+              payload: Record<string, unknown>
+              read: boolean
+              createdAt: number
+            }>
+            nextBeforeId: number
+            unreadCount: number
+            hasMore: boolean
+            hasMoreUnread: boolean
+          }
+          error?: string
+          authRequired?: boolean
+        }>
+        notificationMarkRead: (
+          id: number
+        ) => Promise<{ success: boolean; error?: string; authRequired?: boolean }>
+        notificationMarkAllRead: () => Promise<{
+          success: boolean
+          error?: string
+          authRequired?: boolean
+        }>
+        notificationArchive: (
+          id: number
+        ) => Promise<{ success: boolean; error?: string; authRequired?: boolean }>
         installPluginFromMarket: (plugin: any) => Promise<{
           success: boolean
           error?: string
@@ -315,10 +368,16 @@ declare global {
         // 窗口和设置
         setWindowOpacity: (opacity: number) => Promise<void>
         setWindowDefaultHeight: (height: number) => Promise<void>
+        setCompactMainWindowHeader: (
+          enabled: boolean
+        ) => Promise<{ success: boolean; error?: string }>
         setWindowMaterial: (material: 'mica' | 'acrylic' | 'none') => Promise<{ success: boolean }>
         getWindowMaterial: () => Promise<'mica' | 'acrylic' | 'none'>
         onUpdateWindowMaterial: (callback: (material: 'mica' | 'acrylic' | 'none') => void) => void
         updateAcrylicOpacity: (lightOpacity: number, darkOpacity: number) => Promise<void>
+        updateSearchWallpaper: (
+          wallpaper: SearchWallpaperConfig | null
+        ) => Promise<{ success: boolean }>
         updatePlaceholder: (placeholder: string) => Promise<void>
         selectAvatar: () => Promise<{ success: boolean; path?: string; error?: string }>
         selectImageFile: () => Promise<{
@@ -327,10 +386,22 @@ declare global {
           url?: string
           error?: string
         }>
+        selectSearchWallpaper: () => Promise<{
+          success: boolean
+          path?: string
+          url?: string
+          width?: number
+          height?: number
+          compressed?: boolean
+          error?: string
+        }>
         updateAvatar: (avatar: string) => Promise<void>
         updateAutoPaste: (autoPaste: string) => Promise<void>
         updateAutoClear: (autoClear: string) => Promise<void>
         updateAutoBackToSearch: (autoBackToSearch: string) => Promise<void>
+        updateHideMainWindowOnPluginEsc: (
+          enabled: boolean
+        ) => Promise<{ success: boolean; error?: string }>
         updateWindowPositionStrategy: (strategy: string) => Promise<void>
         updateShowRecentInSearch: (showRecentInSearch: boolean) => Promise<void>
         updateMatchRecommendation: (showMatchRecommendation: boolean) => Promise<void>
@@ -429,16 +500,47 @@ declare global {
         }>
 
         // 数据同步（WebSocket 版）
+        accountGetSession: () => Promise<{
+          success: boolean
+          session?: {
+            serverUrl: string
+            username: string
+            token: string
+            refreshToken?: string
+          } | null
+          error?: string
+        }>
+        accountLogin: (params: {
+          username: string
+          password: string
+          captchaVerifyParam?: string
+        }) => Promise<{
+          success: boolean
+          token?: string
+          refreshToken?: string
+          isNew?: boolean
+          error?: string
+        }>
+        accountSaveSession: (params: {
+          username: string
+          token: string
+          refreshToken?: string
+        }) => Promise<{ success: boolean; error?: string }>
+        accountLogout: () => Promise<{ success: boolean; error?: string }>
+        accountChangePassword: (params: {
+          currentPassword: string
+          newPassword: string
+        }) => Promise<{ success: boolean; error?: string }>
+        accountDelete: () => Promise<{ success: boolean; error?: string }>
         syncGetConfig: () => Promise<{
           success: boolean
           config?: {
+            provider: 'official' | 'private'
             enabled: boolean
             serverUrl: string
-            token: string
-            refreshToken?: string
             syncInterval: number
             lastSyncTime: number
-            username?: string
+            deviceId?: string
           }
           error?: string
         }>
@@ -513,13 +615,26 @@ declare global {
           isNew?: boolean
           error?: string
         }>
+        syncLoginPrivate: (params: {
+          serverUrl: string
+          username: string
+          password: string
+        }) => Promise<{
+          success: boolean
+          token?: string
+          refreshToken?: string
+          isNew?: boolean
+          error?: string
+        }>
+        syncLogoutPrivate: () => Promise<{
+          success: boolean
+          error?: string
+        }>
         syncSaveConfig: (config: {
+          provider?: 'official' | 'private'
           enabled: boolean
           serverUrl: string
-          token: string
-          refreshToken?: string
           syncInterval: number
-          username?: string
         }) => Promise<{
           success: boolean
           error?: string
@@ -540,6 +655,14 @@ declare global {
               deviceId: string
               username?: string
             } | null
+            profile?: {
+              provider: 'official' | 'private'
+              enabled: boolean
+              serverUrl: string
+              syncInterval: number
+              lastSyncTime: number
+              deviceId?: string
+            }
             state: string
             loggedIn: boolean
             username: string
@@ -555,6 +678,12 @@ declare global {
               lastError?: string
               nextRetryAt?: number
             } | null
+            officialAccount?: { loggedIn: boolean; username: string }
+            privateSession?: {
+              loggedIn: boolean
+              serverUrl: string
+              username: string
+            }
           }
           error?: string
         }>
@@ -605,6 +734,39 @@ declare global {
           }
           error?: string
         }>
+        syncGetAccountCredits: () => Promise<{
+          success: boolean
+          credits?: OfficialAiCreditAccount
+          error?: string
+        }>
+        syncGetAICheckinStatus: () => Promise<{
+          success: boolean
+          checkin?: import('@shared/aiProviderShared').OfficialAiCheckinStatus
+          error?: string
+        }>
+        syncAICheckin: () => Promise<{
+          success: boolean
+          checkin?: import('@shared/aiProviderShared').OfficialAiCheckinStatus
+          error?: string
+        }>
+        syncCreateAIRechargeOrder: (amount: string) => Promise<{
+          success: boolean
+          order?: OfficialAiRechargeOrder
+          error?: string
+        }>
+        syncGetAIRechargeOrder: (orderId: string) => Promise<{
+          success: boolean
+          order?: OfficialAiRechargeOrder
+          error?: string
+        }>
+        syncOpenAIRechargeURL: (paymentUrl: string) => Promise<{
+          success: boolean
+          error?: string
+        }>
+        syncCloseAIRechargeWindow: () => Promise<{
+          success: boolean
+          error?: string
+        }>
         syncGetAccountProfile: () => Promise<{
           success: boolean
           profile?: {
@@ -623,11 +785,7 @@ declare global {
           }
           error?: string
         }>
-        syncUpdateNickname: (params: {
-          serverUrl: string
-          token: string
-          nickname: string
-        }) => Promise<{
+        syncUpdateNickname: (params: { nickname: string }) => Promise<{
           success: boolean
           profile?: {
             uid: string
@@ -669,7 +827,7 @@ declare global {
         }>
         syncResetLocalSyncState: () => Promise<{
           success: boolean
-          documentsMarked?: number
+          documentsQueued?: number
           tasksCleared?: number
           error?: string
         }>
@@ -679,6 +837,8 @@ declare global {
             retryStatus?: any
             lastSyncTime?: number
             lastError?: string
+            credentialsInvalidated?: boolean
+            accountCredentialsInvalidated?: boolean
             refresh?: boolean
           }) => void
         ) => () => void
@@ -686,12 +846,22 @@ declare global {
           callback: (payload: { username?: string | null }) => void
         ) => () => void
 
-        // AI 模型管理
-        aiModels: {
-          getAll: () => Promise<{ success: boolean; data?: any[]; error?: string }>
-          add: (model: any) => Promise<{ success: boolean; error?: string }>
-          update: (model: any) => Promise<{ success: boolean; error?: string }>
-          delete: (id: string) => Promise<{ success: boolean; error?: string }>
+        // AI 供应商管理
+        aiProviders: {
+          getAll: () => Promise<{ success: boolean; data?: AiProviderStore; error?: string }>
+          getOfficial: () => Promise<{
+            success: boolean
+            data?: OfficialAiProviderStatus
+            error?: string
+          }>
+          add: (provider: AiProviderInput) => Promise<AiProviderMutationResult>
+          update: (provider: AiProviderInput) => Promise<AiProviderMutationResult>
+          delete: (providerId: string) => Promise<AiProviderMutationResult>
+          setEnabled: (providerId: string, enabled: boolean) => Promise<AiProviderMutationResult>
+          fetchModels: (
+            apiUrl: string,
+            apiKey: string
+          ) => Promise<{ success: boolean; data?: AiRemoteModel[]; error?: string }>
         }
 
         // Provider（翻译 / OCR 等）管理

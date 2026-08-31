@@ -60,7 +60,6 @@ export function loadInternalPlugins(): void {
         isDevelopment: isDev,
         main: mainPath
       }
-      console.log('[InternalPlugin] 加载插件', pluginInfo)
 
       filteredPlugins.push(pluginInfo)
       console.log(`[InternalPlugin] 已加载内置插件: ${pluginName}`)

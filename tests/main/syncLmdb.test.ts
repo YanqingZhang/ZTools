@@ -8,7 +8,7 @@
  *   cd ZTools && pnpm vitest run tests/main/syncLmdb.test.ts
  */
 
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
 import path from 'path'
 import os from 'os'
 import fs from 'fs'
@@ -18,6 +18,10 @@ import LmdbDatabase from '../../src/main/core/lmdb/index'
 import { SyncCheckpointStore } from '../../src/main/core/sync/syncCheckpointStore'
 import { SyncClient, SYNC_PREFIXES } from '../../src/main/core/sync/syncClient'
 import { classifySyncError, SyncTaskStore } from '../../src/main/core/sync/syncTaskStore'
+
+vi.mock('electron', () => ({
+  app: { on: vi.fn() }
+}))
 
 const SERVER_PORT = 23520
 const BASE_URL = `http://localhost:${SERVER_PORT}`
@@ -524,6 +528,36 @@ describe('同步系统集成测试（真实 LMDB）', () => {
       expect(changes[0].docId).toBe(docId)
       expect(changes[0].deleted).toBe(false)
       expect(changes[0].parentRev).toBe('7-remote-deleted')
+
+      db.close()
+    })
+
+    it('读取旧数据和接收远端 revision 时清理废弃云端状态', () => {
+      const db = makeTempDb()
+      const localDocId = 'PLUGIN/legacy-cloud-state'
+      ;(db as any).mainDb.putSync(
+        localDocId,
+        JSON.stringify({ _id: localDocId, _rev: '1-local', _cloudSynced: true, value: 'local' })
+      )
+      db.getMetaDb().putSync(
+        localDocId,
+        JSON.stringify({ _rev: '1-local', _cloudSynced: true, _lastModified: 1 })
+      )
+
+      expect(db.get(localDocId)).not.toHaveProperty('_cloudSynced')
+      expect(db.getSyncMeta(localDocId)).not.toHaveProperty('_cloudSynced')
+      expect(JSON.parse((db as any).mainDb.get(localDocId))).not.toHaveProperty('_cloudSynced')
+      expect(JSON.parse(db.getMetaDb().get(localDocId))).not.toHaveProperty('_cloudSynced')
+
+      const remoteDocId = 'PLUGIN/remote-legacy-cloud-state'
+      db.applyRemoteChange({
+        docId: remoteDocId,
+        rev: '1-remote',
+        deleted: false,
+        timestamp: Date.now(),
+        doc: { _id: remoteDocId, _rev: '1-remote', _cloudSynced: true, value: 'remote' }
+      })
+      expect(db.get(remoteDocId)).not.toHaveProperty('_cloudSynced')
 
       db.close()
     })
@@ -1739,6 +1773,80 @@ describe('同步系统集成测试（真实 LMDB）', () => {
   // ==================== 首次同步场景测试 ====================
 
   describe('首次同步：历史数据推送', () => {
+    it('私有目标确认后官方目标仍能看到自己的待推送变更', () => {
+      const db = makeTempDb()
+      const created = db.put({ _id: 'PLUGIN/provider-switch', value: 'initial' })
+      const store = new SyncCheckpointStore(db)
+      const client = new SyncClient(db)
+      const officialConfig = {
+        enabled: true,
+        serverUrl: 'wss://z.zosen.link',
+        token: 'official-token',
+        refreshToken: '',
+        syncInterval: 30,
+        lastSyncTime: 0,
+        deviceId: 'switch-device',
+        username: 'official-user'
+      }
+      const privateConfig = {
+        ...officialConfig,
+        serverUrl: 'ws://127.0.0.1:23518',
+        token: 'private-token',
+        username: 'root'
+      }
+
+      store.commitLocalPushSeq(
+        store.load(officialConfig.username, officialConfig.deviceId, officialConfig.serverUrl),
+        db.getLastSeq()
+      )
+      const updated = db.put({
+        _id: 'PLUGIN/provider-switch',
+        _rev: created.rev,
+        value: 'changed-on-private'
+      })
+      expect(updated.ok).toBe(true)
+      store.commitLocalPushSeq(
+        store.load(privateConfig.username, privateConfig.deviceId, privateConfig.serverUrl),
+        db.getLastSeq()
+      )
+
+      expect(client.getPendingDocumentCount(privateConfig)).toBe(0)
+      expect(client.getPendingDocumentCount(officialConfig)).toBe(1)
+
+      client.stop()
+      db.close()
+    })
+
+    it('新目标全量扫描包含现存文档和最新删除记录', () => {
+      const db = makeTempDb()
+      db.put({ _id: 'PLUGIN/full-snapshot-live', value: 'live' })
+      const removedDoc = db.put({ _id: 'PLUGIN/full-snapshot-deleted', value: 'deleted' })
+      db.remove({ _id: 'PLUGIN/full-snapshot-deleted', _rev: removedDoc.rev })
+      const client = new SyncClient(db)
+      const queued: any[][] = []
+
+      ;(client as any).beginBatchPush = (changes: any[]): void => {
+        queued.push(changes)
+      }
+      ;(client as any).startFullScanPush()
+
+      expect(queued).toHaveLength(1)
+      expect(queued[0]).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ docId: 'PLUGIN/full-snapshot-live', deleted: false, seq: 0 }),
+          expect.objectContaining({
+            docId: 'PLUGIN/full-snapshot-deleted',
+            deleted: true,
+            seq: 0,
+            doc: null
+          })
+        ])
+      )
+
+      client.stop()
+      db.close()
+    })
+
     it('localSeq=0 时推送所有已有 changelog', async () => {
       const db = makeTempDb()
 

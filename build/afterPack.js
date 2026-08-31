@@ -71,7 +71,63 @@ async function writeFullInstallInfo(context) {
 }
 
 /**
- * 完成 Electron Builder afterPack 阶段的资源清理、内置插件复制和更新包生成。
+ * 按目标平台和架构移除不会被当前安装包加载的原生资源与预编译模块。
+ * @param {import('app-builder-lib').AfterPackContext} context Electron Builder 打包上下文。
+ * @returns {Promise<void>} 平台专属原生资源清理完成后结束的 Promise。
+ * @throws {Error} 无法读取或删除打包资源时抛出错误。
+ */
+async function prunePlatformSpecificRuntimeFiles(context) {
+  const archNames = ['ia32', 'x64', 'armv7l', 'arm64', 'universal']
+  const archName = typeof context.arch === 'number' ? archNames[context.arch] : String(context.arch)
+  const platformPrefixes = {
+    darwin: 'darwin',
+    win32: 'win32',
+    linux: 'linux'
+  }
+  const platformPrefix = platformPrefixes[context.electronPlatformName]
+
+  // 未识别的构建目标不执行裁剪，避免未来新增架构时误删所需文件。
+  if (!platformPrefix || !['x64', 'arm64'].includes(archName)) {
+    console.warn(`跳过原生资源裁剪: platform=${context.electronPlatformName}, arch=${archName}`)
+    return
+  }
+
+  // 定位最终应用的 Resources，确保裁剪发生在签名和制品压缩之前。
+  const resourcesPath =
+    context.electronPlatformName === 'darwin'
+      ? path.join(
+          context.appOutDir,
+          `${context.packager.appInfo.productFilename}.app`,
+          'Contents',
+          'Resources'
+        )
+      : path.join(context.appOutDir, 'resources')
+  const unpackedPath = path.join(resourcesPath, 'app.asar.unpacked')
+
+  // ZTools 原生模块目前只提供 macOS 和 Windows 版本，Linux 不保留任何一个。
+  const nativePlatformDir = context.electronPlatformName === 'darwin' ? 'mac' : 'win'
+  for (const platformDir of ['mac', 'win']) {
+    if (context.electronPlatformName === 'linux' || platformDir !== nativePlatformDir) {
+      await remove(path.join(unpackedPath, 'resources', 'lib', platformDir))
+    }
+  }
+
+  // uiohook 仅保留与当前平台和架构完全匹配的预编译模块。
+  const prebuildsPath = path.join(unpackedPath, 'node_modules', 'uiohook-napi', 'prebuilds')
+  if (await pathExists(prebuildsPath)) {
+    const keepPrebuild = `${platformPrefix}-${archName}`
+    const prebuilds = await fs.readdir(prebuildsPath)
+    for (const prebuild of prebuilds) {
+      if (prebuild !== keepPrebuild) {
+        await remove(path.join(prebuildsPath, prebuild))
+      }
+    }
+    console.log(`已保留 uiohook 预编译模块: ${keepPrebuild}`)
+  }
+}
+
+/**
+ * 完成 Electron Builder afterPack 阶段的资源清理、安装标记写入和内置插件复制。
  * @param {import('app-builder-lib').AfterPackContext} context Electron Builder 打包上下文。
  * @returns {Promise<void>} 所有 afterPack 操作完成后结束的 Promise。
  * @throws {Error} 内置插件复制或其他必须的打包步骤失败时抛出错误。
@@ -199,6 +255,10 @@ module.exports = async function (context) {
     }
   }
 
+  // 在签名前移除其他平台和架构的原生运行时文件。
+  console.log('\n开始裁剪平台专属原生资源...')
+  await prunePlatformSpecificRuntimeFiles(context)
+
   // 写入完整安装标记，供标准更新器隔离 legacy ASAR 安装。
   console.log('\n开始写入完整安装标记...')
   try {
@@ -271,59 +331,6 @@ module.exports = async function (context) {
   }
 
   console.log('\n国际化文件清理完成!')
-
-  // 保留 legacy ASAR 更新包，供尚未完整迁移的旧客户端使用。
-  try {
-    console.log('\n开始打包更新文件...')
-    const AdmZip = require('adm-zip')
-
-    // 确定 app.asar 路径
-    let asarPath = ''
-    let unpackedPath = ''
-
-    if (context.electronPlatformName === 'darwin') {
-      const appName = context.packager.appInfo.productFilename
-      const appPath = path.join(context.appOutDir, `${appName}.app`)
-      asarPath = path.join(appPath, 'Contents', 'Resources', 'app.asar')
-      unpackedPath = path.join(appPath, 'Contents', 'Resources', 'app.asar.unpacked')
-    } else {
-      asarPath = path.join(context.appOutDir, 'resources', 'app.asar')
-      unpackedPath = path.join(context.appOutDir, 'resources', 'app.asar.unpacked')
-    }
-
-    if (await pathExists(asarPath)) {
-      // 输出路径
-      const version = context.packager.appInfo.version
-      const archName = context.arch === 3 || context.arch === 'arm64' ? 'arm64' : 'x64'
-      const platform = context.electronPlatformName
-
-      const outDir = path.dirname(context.appOutDir)
-      const zipName = `update-${platform}-${archName}-${version}.zip`
-      const zipPath = path.join(outDir, zipName)
-
-      console.log('正在创建 zip...')
-      const zip = new AdmZip()
-
-      // 添加 app.asar 并重命名为 app.asar.tmp
-      zip.addLocalFile(asarPath, '', 'app.asar.tmp')
-      console.log(`已添加 app.asar (重命名为 app.asar.tmp)`)
-
-      if (await pathExists(unpackedPath)) {
-        zip.addLocalFolder(unpackedPath, 'app.asar.unpacked')
-        console.log(`已添加 app.asar.unpacked`)
-      }
-
-      zip.writeZip(zipPath)
-
-      const stats = await fs.stat(zipPath)
-      console.log(`更新包已生成: ${zipPath}`)
-      console.log(`Total size: ${(stats.size / 1024 / 1024).toFixed(2)} MB`)
-    } else {
-      console.error(`未找到 app.asar: ${asarPath}`)
-    }
-  } catch (err) {
-    console.error('打包更新文件失败:', err)
-  }
 }
 
 // 计算文件夹大小

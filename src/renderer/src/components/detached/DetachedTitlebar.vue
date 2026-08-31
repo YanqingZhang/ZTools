@@ -1,10 +1,10 @@
 <template>
-  <div :class="['titlebar', platform]">
+  <div :class="['titlebar', platform, { 'is-compact': compactWindowHeader }]">
     <!-- macOS 不显示自定义交通灯，使用系统原生的 -->
 
     <!-- 插件图标和名称 -->
     <div class="plugin-info" @dblclick="handleDblClick">
-      <div class="logo-container">
+      <div :class="['logo-container', { 'ai-active': aiRequestStatus !== 'idle' }]">
         <!-- AI 状态动画层 -->
         <div v-if="aiRequestStatus !== 'idle'" class="ai-animation-layer">
           <!-- 蒙版层 -->
@@ -176,6 +176,7 @@ import {
 } from '../../composables/useMainPushSetting'
 import AdaptiveIcon from '../common/AdaptiveIcon.vue'
 import { CommonKeyboardModifier, readModifiers } from '@renderer/utils/convertKeyboardEvent'
+import type { AiRequestStatus, AiRequestStatusChange } from '@shared/aiRequestStatus'
 
 const platform = ref<'darwin' | 'win32'>('darwin')
 const pluginName = ref('Plugin')
@@ -188,9 +189,10 @@ const isPinned = ref(false)
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const acrylicLightOpacity = ref(78) // 亚克力明亮模式透明度（默认 78%）
 const acrylicDarkOpacity = ref(50) // 亚克力暗黑模式透明度（默认 50%）
-const aiRequestStatus = ref<'idle' | 'sending' | 'receiving'>('idle') // AI 请求状态
+const aiRequestStatus = ref<AiRequestStatus>('idle') // AI 请求状态
 const primaryColor = ref('green')
 const customColor = ref('#db2777')
+const compactWindowHeader = ref(false)
 
 type PluginUpdateStatus = 'idle' | 'available' | 'upgrading' | 'error'
 
@@ -212,6 +214,7 @@ const pluginUpgradeProgress = ref<number | null>(null)
 const pluginUpgradeError = ref('')
 let pluginUpdateRequestSequence = 0
 let cleanupPluginUpdateProgressListener: (() => void) | null = null
+let cleanupCompactWindowHeaderListener: (() => void) | null = null
 
 const hasPluginUpdate = computed(
   () => pluginUpdateName.value === pluginId.value && pluginUpdateStatus.value !== 'idle'
@@ -427,6 +430,9 @@ onMounted(async () => {
   cleanupPluginUpdateProgressListener = window.ztools.pluginUpdates.onProgress(
     handlePluginUpgradeProgress
   )
+  cleanupCompactWindowHeaderListener = window.ztools.onUpdateCompactMainWindowHeader((enabled) => {
+    compactWindowHeader.value = enabled
+  })
 
   // 检测操作系统并添加类名
   const userAgent = navigator.userAgent.toLowerCase()
@@ -444,6 +450,7 @@ onMounted(async () => {
     if (settings) {
       acrylicLightOpacity.value = settings.acrylicLightOpacity ?? 78
       acrylicDarkOpacity.value = settings.acrylicDarkOpacity ?? 50
+      compactWindowHeader.value = settings.compactMainWindowHeader === true
       console.log('标题栏加载亚克力透明度:', {
         light: acrylicLightOpacity.value,
         dark: acrylicDarkOpacity.value
@@ -523,6 +530,8 @@ onMounted(async () => {
     pluginId.value = data.pluginName // 保存实际的插件 name，用于数据库读写
     pluginPath.value = data.pluginPath || ''
     pluginLogo.value = data.pluginLogo
+    aiRequestStatus.value = data.aiRequestStatus || 'idle'
+    compactWindowHeader.value = data.compactWindowHeader === true
 
     // 初始化信息到达后再检查版本，确保请求携带真实插件名和路径。
     void checkCurrentPluginUpdate()
@@ -590,8 +599,11 @@ onMounted(async () => {
 
   // 监听 AI 状态变化
   if (window.ztools?.onAiStatusChanged) {
-    window.ztools.onAiStatusChanged((status: 'idle' | 'sending' | 'receiving') => {
-      aiRequestStatus.value = status
+    window.ztools.onAiStatusChanged((change: AiRequestStatusChange) => {
+      // 独立标题栏只消费自身插件的状态，避免其他窗口请求串扰。
+      if (change.pluginPath === pluginPath.value) {
+        aiRequestStatus.value = change.status
+      }
     })
   }
 })
@@ -600,6 +612,8 @@ onUnmounted(() => {
   // 释放进度监听并让尚未返回的版本请求失效。
   cleanupPluginUpdateProgressListener?.()
   cleanupPluginUpdateProgressListener = null
+  cleanupCompactWindowHeaderListener?.()
+  cleanupCompactWindowHeaderListener = null
   pluginUpdateRequestSequence += 1
 })
 
@@ -725,7 +739,11 @@ function handleDblClick(): void {
   }
 }
 
-// 键盘事件处理
+/**
+ * 键盘事件处理，拦截并转发回车、Tab 及方向键至插件。
+ * @param event 键盘事件对象。
+ * @returns 无返回值。
+ */
 function handleKeydown(event: KeyboardEvent): void {
   // ESC 键清空输入
   if (event.key === 'Escape') {
@@ -738,11 +756,20 @@ function handleKeydown(event: KeyboardEvent): void {
     return
   }
 
-  // 回车键传递给插件
+  // 提取当前生效的修饰键
   const modifiers = readModifiers(event)
+
+  // 回车键传递给插件
   if (event.key === 'Enter') {
     event.preventDefault()
     sendKeyToPlugin('Enter', modifiers)
+    return
+  }
+
+  // Tab 键传递给插件（同时阻止宿主标题栏 DOM 焦点跳转）
+  if (event.key === 'Tab') {
+    event.preventDefault()
+    sendKeyToPlugin('Tab', modifiers)
     return
   }
 
@@ -758,7 +785,12 @@ function handleKeydown(event: KeyboardEvent): void {
   }
 }
 
-// 发送方向键到插件
+/**
+ * 发送方向键按键事件至插件。
+ * @param key 方向键键名（ArrowLeft/ArrowRight/ArrowUp/ArrowDown）。
+ * @param modifiers 修饰键列表。
+ * @returns 无返回值。
+ */
 function sendArrowKeyToPlugin(key: string, modifiers: CommonKeyboardModifier[] = []): void {
   const keyCodeMap: Record<string, string> = {
     ArrowLeft: 'Left',
@@ -786,7 +818,12 @@ function sendArrowKeyToPlugin(key: string, modifiers: CommonKeyboardModifier[] =
   }
 }
 
-// 发送按键到插件（用于回车键等）
+/**
+ * 发送通用功能键按键事件至插件（用于回车键、Tab 键等）。
+ * @param key 目标键名字符串（例如 'Enter'、'Tab'）。
+ * @param modifiers 修饰键列表。
+ * @returns 无返回值。
+ */
 function sendKeyToPlugin(key: string, modifiers: CommonKeyboardModifier[] = []): void {
   // 发送 keyDown 事件
   window.electron.ipcRenderer.send('send-arrow-key', {
@@ -826,6 +863,20 @@ body {
   padding-left: 90px; /* 为系统交通灯按钮留空间 */
 }
 
+.titlebar.is-compact {
+  height: 40px;
+}
+
+.titlebar.is-compact .logo-container,
+.titlebar.is-compact .plugin-logo {
+  width: 30px;
+  height: 30px;
+}
+
+.titlebar.is-compact .search-input {
+  height: 30px;
+}
+
 /* 插件信息 */
 .plugin-info {
   display: flex;
@@ -853,6 +904,12 @@ body {
   object-fit: contain;
   flex-shrink: 0;
   z-index: 0;
+  transition: border-radius 0.24s ease;
+}
+
+/* AI 调用期间将插件图标裁成圆形，避免圆形状态层外露出矩形四角。 */
+.logo-container.ai-active .plugin-logo {
+  border-radius: 50%;
 }
 
 /* AI 动画层 */

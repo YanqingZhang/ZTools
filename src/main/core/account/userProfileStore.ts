@@ -1,7 +1,5 @@
 import lmdbInstance from '../lmdb/lmdbInstance'
-import type { SyncConfig } from '../sync/types'
-
-const ONLINE_SYNC_SERVER_URL = 'wss://z-tools.top'
+import { loadOfficialAccountSessionSync } from './officialAccountService'
 const USER_PROFILE_CACHE_PREFIX = 'ZTOOLS/account-profile-cache:'
 
 export interface UserInfo {
@@ -65,10 +63,9 @@ export function cacheUserProfile(profile: unknown, fallbackUid: string = ''): vo
  */
 export function getCurrentUserInfo(): UserInfo | null {
   try {
-    // 仅把官方 ZTools 账号配置视为插件 API 可见的登录态。
-    const config = lmdbInstance.get('SYNC/config')?.data as Partial<SyncConfig> | undefined
+    const config = loadOfficialAccountSessionSync()
     const uid = typeof config?.username === 'string' ? config.username.trim() : ''
-    if (!config?.token || config.serverUrl !== ONLINE_SYNC_SERVER_URL || !uid) return null
+    if (!config?.token || !uid) return null
 
     // 资料缓存缺失时仍返回字段完整的用户对象，避免首次登录期间产生不稳定结果。
     const cached = lmdbInstance.get(getUserProfileCacheId(uid))?.data as

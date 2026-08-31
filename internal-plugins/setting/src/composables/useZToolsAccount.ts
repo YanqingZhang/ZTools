@@ -1,4 +1,6 @@
-export const ONLINE_SYNC_SERVER_URL = 'wss://z-tools.top'
+import { OFFICIAL_SYNC_SERVER_URL } from '@shared/syncServerUrl'
+
+export const ONLINE_SYNC_SERVER_URL = OFFICIAL_SYNC_SERVER_URL
 export const ACCOUNT_CHANGED_EVENT = 'ztools-account-changed'
 
 export interface ZToolsLoginPayload {
@@ -28,8 +30,7 @@ export function notifyAccountChanged(): void {
 }
 
 export async function loginZToolsAccount(payload: ZToolsLoginPayload): Promise<ZToolsLoginResult> {
-  const loginResult = await window.ztools.internal.syncLogin({
-    serverUrl: ONLINE_SYNC_SERVER_URL,
+  const loginResult = await window.ztools.internal.accountLogin({
     username: payload.username,
     password: payload.password,
     captchaVerifyParam: payload.captchaVerifyParam
@@ -37,17 +38,6 @@ export async function loginZToolsAccount(payload: ZToolsLoginPayload): Promise<Z
   if (!loginResult.success || !loginResult.token) {
     throw new Error(loginResult.error || '登录失败')
   }
-
-  const configResult = await window.ztools.internal.syncGetConfig()
-  const currentConfig = configResult.success ? configResult.config : null
-  await window.ztools.internal.syncSaveConfig({
-    enabled: Boolean(currentConfig?.enabled),
-    serverUrl: ONLINE_SYNC_SERVER_URL,
-    token: loginResult.token,
-    refreshToken: loginResult.refreshToken || '',
-    syncInterval: currentConfig?.syncInterval || 30,
-    username: payload.username
-  })
 
   notifyAccountChanged()
   return {

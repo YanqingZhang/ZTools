@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useEscapeHandler } from '@/composables'
+
 defineProps<{
   title: string
 }>()
@@ -6,6 +8,19 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'back'): void
 }>()
+
+/**
+ * 返回详情面板的上一级，并消费当前 ESC 事件。
+ * @param _event 当前键盘事件
+ * @returns 已消费 ESC 事件
+ */
+function handleEscape(_event: KeyboardEvent): boolean {
+  emit('back')
+  return true
+}
+
+// 详情面板作为低优先级兜底，嵌套弹窗和选择器会先处理 ESC。
+useEscapeHandler(handleEscape, { priority: 50 })
 </script>
 <template>
   <!-- 覆盖内容区的详情面板（无遮罩） -->

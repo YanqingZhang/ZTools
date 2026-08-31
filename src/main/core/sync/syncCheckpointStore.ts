@@ -1,11 +1,13 @@
 import type LmdbDatabase from '../lmdb/index'
 import type { FullChangeEntry } from './types'
+import { isOfficialSyncServerUrl, normalizeSyncServerUrl } from '../../../shared/syncServerUrl'
 
 const CHECKPOINT_KEY = '_sync_checkpoint'
 
 export interface SyncCheckpoint {
   uid?: string
   deviceId?: string
+  serverUrl?: string
   remotePullSeq: number
   localPushSeq: number
   syncEpoch: number
@@ -34,29 +36,49 @@ export interface SyncCheckpoint {
 export class SyncCheckpointStore {
   constructor(private db: LmdbDatabase) {}
 
-  load(uid?: string, deviceId?: string): SyncCheckpoint {
+  /**
+   * 读取账号、设备和服务器共同作用域下的同步进度。
+   * @param uid 同步账号标识。
+   * @param deviceId 当前设备标识。
+   * @param serverUrl 当前同步服务器地址。
+   * @returns 已有 checkpoint，或新建的零进度 checkpoint。
+   */
+  load(uid?: string, deviceId?: string, serverUrl?: string): SyncCheckpoint {
     const metaDb = this.db.getMetaDb()
-    const existing = this.parse(metaDb.get(this.key(uid, deviceId)))
+    const existing = this.parse(metaDb.get(this.key(uid, deviceId, serverUrl)))
     if (existing) {
-      return this.normalize({ ...existing, uid, deviceId })
+      return this.normalize({ ...existing, uid, deviceId, serverUrl })
     }
 
-    return this.reset(uid, deviceId)
+    return this.reset(uid, deviceId, serverUrl)
   }
 
+  /**
+   * 将同步进度写入其服务器作用域对应的存储 key。
+   * @param checkpoint 待保存的同步进度。
+   * @returns 无返回值。
+   */
   save(checkpoint: SyncCheckpoint): void {
     this.db
       .getMetaDb()
       .putSync(
-        this.key(checkpoint.uid, checkpoint.deviceId),
+        this.key(checkpoint.uid, checkpoint.deviceId, checkpoint.serverUrl),
         JSON.stringify(this.normalize(checkpoint))
       )
   }
 
-  reset(uid?: string, deviceId?: string): SyncCheckpoint {
+  /**
+   * 清空指定账号、设备和服务器作用域的同步进度。
+   * @param uid 同步账号标识。
+   * @param deviceId 当前设备标识。
+   * @param serverUrl 当前同步服务器地址。
+   * @returns 已持久化的零进度 checkpoint。
+   */
+  reset(uid?: string, deviceId?: string, serverUrl?: string): SyncCheckpoint {
     const checkpoint = this.normalize({
       uid,
       deviceId,
+      serverUrl,
       remotePullSeq: 0,
       localPushSeq: 0,
       syncEpoch: 0,
@@ -192,15 +214,45 @@ export class SyncCheckpointStore {
     return next
   }
 
-  private key(uid?: string, deviceId?: string): string {
+  /**
+   * 生成 checkpoint 存储 key，并为官方服务保留历史 key 兼容性。
+   * @param uid 同步账号标识。
+   * @param deviceId 当前设备标识。
+   * @param serverUrl 当前同步服务器地址。
+   * @returns LMDB metadata key。
+   */
+  private key(uid?: string, deviceId?: string, serverUrl?: string): string {
     if (!uid || !deviceId) return CHECKPOINT_KEY
+    if (serverUrl && !isOfficialSyncServerUrl(serverUrl)) {
+      // 私有服务必须进入独立命名空间，避免同名账号复用其他服务器的拉取序号。
+      return `${CHECKPOINT_KEY}:${this.serverIdentity(serverUrl)}:${uid}:${deviceId}`
+    }
     return `${CHECKPOINT_KEY}:${uid}:${deviceId}`
   }
 
+  /**
+   * 生成稳定且可作为 LMDB key 片段的服务地址标识。
+   * @param serverUrl 当前同步服务器地址。
+   * @returns URL 编码后的规范化服务器地址。
+   */
+  private serverIdentity(serverUrl: string): string {
+    try {
+      return encodeURIComponent(normalizeSyncServerUrl(serverUrl))
+    } catch {
+      return encodeURIComponent(serverUrl.trim().replace(/\/+$/, '').toLowerCase())
+    }
+  }
+
+  /**
+   * 补全 checkpoint 缺省值，并保留其账号、设备和服务器作用域。
+   * @param value 待规范化的部分 checkpoint。
+   * @returns 字段完整且数值安全的 checkpoint。
+   */
   private normalize(value: Partial<SyncCheckpoint>): SyncCheckpoint {
     return {
       uid: value.uid,
       deviceId: value.deviceId,
+      serverUrl: value.serverUrl,
       remotePullSeq: this.safeNumber(value.remotePullSeq),
       localPushSeq: this.safeNumber(value.localPushSeq),
       syncEpoch: this.safeNumber(value.syncEpoch),

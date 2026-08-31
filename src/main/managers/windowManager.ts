@@ -22,11 +22,15 @@ import globalInputManager from '../core/globalInputManager.js'
 import { WindowManager as NativeWindowManager } from '../core/native/index.js'
 import clipboardManager from './clipboardManager'
 
-import { WINDOW_DEFAULT_HEIGHT, WINDOW_INITIAL_HEIGHT, WINDOW_WIDTH } from '../common/constants'
+import { WINDOW_DEFAULT_HEIGHT, WINDOW_WIDTH } from '../common/constants'
 import detachedWindowManager from '../core/detachedWindowManager'
 import superPanelManager from '../core/superPanelManager'
 import { applyWindowMaterial, getDefaultWindowMaterial } from '../utils/windowUtils'
 import pluginManager from './pluginManager'
+import {
+  normalizeCompactMainWindowHeader,
+  resolveMainWindowHeaderHeight
+} from '../../shared/mainWindowLayout'
 
 // 窗口材质类型
 type WindowMaterial = 'mica' | 'acrylic' | 'none'
@@ -114,6 +118,7 @@ class WindowManager {
   private appShortcuts: Map<string, string> = new Map() // 应用快捷键映射表 (快捷键 -> 目标指令)
   private wakeupBlacklist: Array<{ app: string; bundleId?: string; label?: string }> = [] // 唤醒黑名单
   private onThemeInfoChanged: (() => void) | null = null // 主题信息变更回调钩子
+  private compactMainWindowHeader = false // 主窗口是否使用紧凑顶部栏
   // 应用快捷键触发时携带的当前输入上下文
   private appShortcutLaunchContext: AppShortcutLaunchContext = {
     searchQuery: '',
@@ -135,6 +140,23 @@ class WindowManager {
    */
   public notifyBackToSearch(): void {
     this.mainWindow?.webContents.send('back-to-search')
+  }
+
+  /**
+   * 更新主窗口顶部栏密度，后续窗口尺寸和插件视图布局统一读取该状态。
+   * @param enabled 是否启用紧凑顶部栏。
+   * @returns 无返回值。
+   */
+  public setCompactMainWindowHeader(enabled: boolean): void {
+    this.compactMainWindowHeader = normalizeCompactMainWindowHeader(enabled)
+  }
+
+  /**
+   * 获取当前主窗口顶部栏高度。
+   * @returns 当前主窗口顶部栏高度，单位为像素。
+   */
+  public getMainWindowHeaderHeight(): number {
+    return resolveMainWindowHeaderHeight(this.compactMainWindowHeader)
   }
 
   private isLeftMouseButton(button: unknown): boolean {
@@ -160,8 +182,14 @@ class WindowManager {
     }
   }
 
+  /**
+   * 判断当前是否应阻止失焦自动隐藏，E2E 模式始终保持窗口可见。
+   *
+   * @returns 需要阻止失焦隐藏时返回 true。
+   */
   private isBlurHideSuppressed(): boolean {
     return (
+      process.env.ZTOOLS_E2E === '1' ||
       this.suppressBlurHide ||
       this.modalDialogBlurHideSuppressed ||
       this.transientBlurSuppressTimer !== null
@@ -321,17 +349,24 @@ class WindowManager {
 
   /**
    * 创建主窗口
+   *
+   * @returns 创建完成的主窗口实例。
    */
   public createWindow(): BrowserWindow {
     // 智能检测：在鼠标所在的显示器上打开窗口
     const { width, height, x: displayX, y: displayY } = this.getDisplayAtCursor()
+
+    // 创建窗口前读取布局偏好，避免首次显示后再跳变高度。
+    const settings = databaseAPI.dbGet('settings-general')
+    this.setCompactMainWindowHeader(settings?.compactMainWindowHeader === true)
+    const initialHeight = this.getMainWindowHeaderHeight()
 
     // 根据平台设置不同的窗口配置
     const windowConfig: Electron.BrowserWindowConstructorOptions = {
       type: 'panel',
       title: 'ZTools',
       width: WINDOW_WIDTH,
-      height: WINDOW_INITIAL_HEIGHT,
+      height: initialHeight,
       alwaysOnTop: true,
       // 基于最大窗口高度计算居中位置，确保窗口扩展时不会超出屏幕
       x: displayX + Math.floor((width - WINDOW_WIDTH) / 2),
@@ -509,7 +544,10 @@ class WindowManager {
       }
     })
 
-    this.startMouseStateTracking()
+    if (process.env.ZTOOLS_E2E !== '1') {
+      // 系统级鼠标监听不属于界面冒烟测试范围，避免请求权限和产生全局副作用。
+      this.startMouseStateTracking()
+    }
 
     this.mainWindow.on('show', () => {
       // 开始恢复焦点流程，防止 focus 事件监听器修改 lastFocusTarget
@@ -535,7 +573,7 @@ class WindowManager {
 
     // 阻止窗口被销毁（Command+W 时隐藏而不是关闭）
     this.mainWindow.on('close', (event) => {
-      if (!this.isQuitting) {
+      if (process.env.ZTOOLS_E2E !== '1' && !this.isQuitting) {
         event.preventDefault()
 
         // 若当前处于插件页面，先退出插件回到主搜索框
@@ -614,10 +652,13 @@ class WindowManager {
 
   /**
    * 创建托盘菜单
+   *
+   * @returns 无返回值。
    */
   private createTrayMenu(): void {
     if (!this.tray) return
 
+    // 使用普通菜单项显示游戏模式状态，避免原生 checkbox 为整个菜单预留勾选栏。
     this.trayMenu = Menu.buildFromTemplate([
       {
         label: '显示/隐藏',
@@ -626,9 +667,7 @@ class WindowManager {
         }
       },
       {
-        label: '游戏模式',
-        type: 'checkbox',
-        checked: dndManager.manualEnabled,
+        label: dndManager.manualEnabled ? '游戏模式 ✓' : '游戏模式',
         click: () => {
           dndManager.toggleManual()
           this.refreshTrayMenu()
@@ -747,8 +786,24 @@ class WindowManager {
     return ret
   }
 
+  /**
+   * 设置主窗口关闭后需要恢复的前台窗口。
+   * @param windowInfo 要记录的窗口信息，传入 null 时清除已有记录。
+   * @returns 无返回值。
+   */
   public setPreviousActiveWindow(windowInfo: typeof this.previousActiveWindow): void {
     this.previousActiveWindow = windowInfo
+  }
+
+  /**
+   * 捕获当前前台窗口，供不显示主窗口的启动链路保留本次操作目标。
+   * @returns 捕获到的窗口信息；无法获取时返回 null 并清除旧记录。
+   */
+  public captureCurrentActiveWindow(): typeof this.previousActiveWindow {
+    // 即使本次捕获失败也要清除旧值，避免后续 API 误用上一次启动留下的窗口。
+    const currentWindow = clipboardManager.getCurrentWindow()
+    this.previousActiveWindow = currentWindow
+    return currentWindow
   }
 
   /**
@@ -987,17 +1042,23 @@ class WindowManager {
   }
 
   /**
-   * 隐藏窗口
+   * 隐藏主窗口，并按需恢复隐藏前的前台窗口。
+   * @param _restoreFocus 是否恢复隐藏前的前台窗口。
+   * @returns 无返回值。
    */
   public hideWindow(_restoreFocus: boolean = true): void {
     console.log('[Window] 隐藏窗口', _restoreFocus)
 
-    // 记录当前的焦点状态（在隐藏之前）
-    this.recordFocusState()
+    const wasMainWindowVisible = this.mainWindow?.isVisible() === true
+
+    // 只有主窗口实际显示过，才记录并恢复其隐藏前的焦点状态。
+    if (wasMainWindowVisible) {
+      this.recordFocusState()
+    }
 
     this.mainWindow?.hide()
-    if (_restoreFocus) {
-      this.restorePreviousWindow()
+    if (_restoreFocus && wasMainWindowVisible) {
+      void this.restorePreviousWindow()
     }
 
     // 启动自动返回搜索定时器

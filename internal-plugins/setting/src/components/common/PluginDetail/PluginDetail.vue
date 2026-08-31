@@ -26,6 +26,7 @@ const props = withDefaults(
     showSize?: boolean
     showDownloadCount?: boolean
     showMarketButton?: boolean
+    initialTab?: TabId
   }>(),
   {
     showDetail: true,
@@ -96,7 +97,8 @@ const {
   showDetail: props.showDetail,
   showComments: props.showComments,
   showCommands: props.showCommands,
-  showData: props.showData
+  showData: props.showData,
+  initialTab: props.initialTab
 })
 
 function onSwitchTab(tabId: TabId): void {

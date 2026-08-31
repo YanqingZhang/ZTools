@@ -4,10 +4,7 @@
 export interface DbDoc {
   _id: string
   _rev?: string
-
-  // 同步字段（优化方案）
   _lastModified?: number // 最后修改时间戳（毫秒），用于冲突解决
-  _cloudSynced?: boolean // 是否已同步到云端，用于启动扫描优化
 
   [key: string]: any
 }
@@ -16,7 +13,6 @@ export interface SyncMeta {
   _rev: string
   _winningRev?: string
   _lastModified?: number
-  _cloudSynced?: boolean
   _deleted?: boolean
   _hasConflicts?: boolean
   _conflictCount?: number

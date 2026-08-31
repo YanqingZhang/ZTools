@@ -4,6 +4,7 @@ import { isBundledInternalPlugin } from './internalPlugins.js'
 import { HOST_STORAGE_KEYS, LEGACY_CAMEL_CASE_STORAGE_KEYS } from '../../shared/storageKeys.js'
 import { getZToolsDataLayout, type AppDataPathOptions } from './appData/appDataPaths.js'
 import { rewriteLegacyStoragePaths } from './storage/legacyPathRewriter.js'
+import aiProviderService from './aiProviderService.js'
 
 const LEGACY_WEB_SEARCH_FEATURE_PREFIX = 'web-search-'
 const LEGACY_PATH_STORAGE_KEYS = [
@@ -76,6 +77,8 @@ function migrateLegacyMacAppIcons(items: any[]): boolean {
  * @returns 无返回值
  */
 export function runStartupDataMigrations(): void {
+  // 先升级 AI 配置，保证后续设置页和插件调用只读取统一的供应商结构。
+  aiProviderService.migrateLegacyData()
   migrateLegacyFileUrls()
   migrateHostStorageKeys()
   migrateDevPluginNames()

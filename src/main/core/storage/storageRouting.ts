@@ -14,7 +14,9 @@ const ACCOUNT_EXACT_KEYS = new Set([
   'ZTOOLS/user-settings',
   'ZTOOLS/ai-models',
   'ZTOOLS/web-search-engines',
-  'ZTOOLS/avatar'
+  'ZTOOLS/avatar',
+  'SYNC/profile',
+  'SYNC/private-session'
 ])
 
 const DEVICE_EXACT_KEYS = new Set([
@@ -33,7 +35,9 @@ const DEVICE_EXACT_KEYS = new Set([
   'ZTOOLS/development-projects',
   'SYNC/accounts',
   'SYNC/current-account',
-  'SYNC/config'
+  'SYNC/config',
+  'SYNC/separated-auth-migrated',
+  'AUTH/official-account'
 ])
 
 const DEVICE_PREFIXES = ['SYNC/']

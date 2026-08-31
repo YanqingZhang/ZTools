@@ -3,6 +3,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
+
 const DOC_COUNT = Number(process.env.DOC_COUNT || 5000)
 const DOC_PAYLOAD_BYTES = Number(process.env.DOC_PAYLOAD_BYTES || 512)
 const MAP_SIZE = Number(process.env.MAP_SIZE || 2 * 1024 * 1024 * 1024)

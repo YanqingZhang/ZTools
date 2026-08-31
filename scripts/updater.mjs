@@ -75,5 +75,5 @@ if (macX64MetadataPath || macArm64MetadataPath) {
 
 writeFileSync('changelog.md', updatedChangelog)
 
-console.log(`✅ 标准更新元数据已保留 electron-builder 生成的 SHA-512`)
+console.log(`✅ 标准更新元数据已保留 files 中 electron-builder 生成的 SHA-512`)
 console.log(`✅ 已更新 changelog.md（添加下载链接）`)

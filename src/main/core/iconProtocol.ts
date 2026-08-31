@@ -1,4 +1,6 @@
 import { protocol } from 'electron'
+import { promises as fs } from 'fs'
+import path from 'path'
 import { IconExtractor } from './native/index'
 
 /** 图标内存缓存（LRU 淘汰，Map 按插入顺序迭代） */
@@ -24,9 +26,46 @@ function setIconCache(key: string, buffer: Buffer): void {
 }
 
 /**
- * 根据平台提取图标并返回 PNG Buffer（异步，直接调用原生，无队列）
+ * 判断文件内容是否具有 PNG 文件签名。
+ *
+ * @param buffer 待校验的文件内容。
+ * @returns 是否为 PNG 图片数据。
+ */
+function isPngBuffer(buffer: Buffer): boolean {
+  return (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  )
+}
+
+/**
+ * 根据图标源类型读取原图或提取系统图标，并统一返回 PNG Buffer。
+ *
+ * @param iconPath 图片、快捷方式或可执行文件路径。
+ * @returns PNG 格式的图标内容。
+ * @throws 图片读取及原生图标提取都失败时抛出。
  */
 async function extractIcon(iconPath: string): Promise<Buffer> {
+  if (path.extname(iconPath).toLowerCase() === '.png') {
+    try {
+      // UWP 的 manifest 图标是图片本身，直接读取可避免得到“PNG 文件类型”通用图标。
+      const imageBuffer = await fs.readFile(iconPath)
+      if (isPngBuffer(imageBuffer)) {
+        return imageBuffer
+      }
+    } catch {
+      // 文件不可读时继续尝试 Shell 图标提取，保留现有容错行为。
+    }
+  }
+
+  // 可执行文件、快捷方式和非 PNG 文件继续交给平台原生图标提取器。
   const iconBuffer = await IconExtractor.getFileIcon(iconPath)
   if (!iconBuffer) {
     throw new Error('Failed to extract icon')

@@ -2,6 +2,8 @@
   <div
     ref="searchBoxRef"
     class="search-box"
+    :class="{ 'is-compact': windowStore.compactMainWindowHeader }"
+    :style="{ height: `${mainWindowHeaderHeight}px` }"
     @mousedown="handleMouseDown"
     @dblclick="handleDoubleClick"
   >
@@ -135,6 +137,7 @@
           @keydown.down="(e) => keydownEvent(e, 'down')"
           @keydown.up="(e) => keydownEvent(e, 'up')"
           @keydown.enter="(e) => keydownEvent(e, 'enter')"
+          @keydown.tab="(e) => keydownEvent(e, 'tab')"
           @paste="handlePaste"
         />
       </div>
@@ -208,6 +211,7 @@
         :class="{
           loading: isPluginLoading,
           'is-default': isDefaultAvatar,
+          'ai-active': windowStore.aiRequestStatus !== 'idle',
           'ai-sending': windowStore.aiRequestStatus === 'sending',
           'ai-receiving': windowStore.aiRequestStatus === 'receiving'
         }"
@@ -263,12 +267,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import PluginUpgradeIcon from '@renderer/assets/icons/plugin-upgrade.svg?component'
+import { resolveMainWindowHeaderHeight } from '@shared/mainWindowLayout'
 import { normalizeConfigList } from '@shared/pluginSettings'
 import {
   resolveMainPushMenuState,
   toggleMainPushSetting
 } from '../../composables/useMainPushSetting'
 import { DEFAULT_AVATAR, useWindowStore } from '../../stores/windowStore'
+import type { NavDirectionKey } from '@renderer/utils/convertKeyboardEvent'
 import AdaptiveIcon from '../common/AdaptiveIcon.vue'
 import UpdateIcon from './UpdateIcon.vue'
 
@@ -305,17 +311,16 @@ const emit = defineEmits<{
   (e: 'update:pastedFiles', value: FileItem[] | null): void
   (e: 'update:pastedText', value: string | null): void
   (e: 'keydown', event: KeyboardEvent): void
-  (
-    e: 'arrow-keydown',
-    event: KeyboardEvent,
-    direction: 'left' | 'right' | 'up' | 'down' | 'enter'
-  ): void
+  (e: 'arrow-keydown', event: KeyboardEvent, direction: NavDirectionKey): void
   (e: 'composing', isComposing: boolean): void
   (e: 'settings-click'): void
   (e: 'close-plugin'): void
 }>()
 
 const windowStore = useWindowStore()
+const mainWindowHeaderHeight = computed(() =>
+  resolveMainWindowHeaderHeight(windowStore.compactMainWindowHeader)
+)
 
 const searchBoxRef = ref<HTMLDivElement | null>(null)
 const searchActionsRef = ref<HTMLDivElement | null>(null)
@@ -684,16 +689,19 @@ async function onKeydown(event: KeyboardEvent): Promise<void> {
   emit('keydown', event)
 }
 
-function keydownEvent(
-  event: KeyboardEvent,
-  direction: 'left' | 'right' | 'up' | 'down' | 'enter'
-): void {
-  // 如果正在输入法组合中,不触发键盘事件
+/**
+ * 处理搜索输入框的导航按键事件（方向键、回车键、Tab键），向上层派发转发或导航请求。
+ * @param event 键盘事件对象。
+ * @param direction 按键动作类型（'left' | 'right' | 'up' | 'down' | 'enter' | 'tab'）。
+ * @returns 无返回值。
+ */
+function keydownEvent(event: KeyboardEvent, direction: NavDirectionKey): void {
+  // 处于输入法组合态时，忽略导航与按键转发，避免打断拼音选词
   if (isComposing.value) {
     return
   }
 
-  // 如果输入框有选中的文字,不触发列表导航（仅搜索模式下生效，插件模式下需要转发给插件）
+  // 搜索模式下若存在文本选中态，阻止列表导航以优先保障输入框文本编辑行为
   if (
     props.currentView !== 'plugin' &&
     inputRef.value &&
@@ -703,6 +711,7 @@ function keydownEvent(
     return
   }
 
+  // 向父组件派发按键动作，供上层决定列表导航或转发给插件
   emit('arrow-keydown', event, direction)
 }
 
@@ -1057,8 +1066,8 @@ onMounted(() => {
   }
 
   // 监听 AI 状态变化
-  window.ztools.onAiStatusChanged?.((status: 'idle' | 'sending' | 'receiving') => {
-    windowStore.setAiRequestStatus(status)
+  window.ztools.onAiStatusChanged?.((change) => {
+    windowStore.setAiRequestStatus(change)
   })
 
   // 升级进度只监听当前主窗口发起的市场安装任务。
@@ -1291,6 +1300,105 @@ defineExpose({
   user-select: none; /* 禁止选取文本 */
   border-radius: 0; /* 组件本身不要圆角 */
   height: 58px;
+}
+
+.search-box.is-compact {
+  padding-block: 3px;
+  padding-inline: 8px;
+}
+
+.search-box.is-compact .measure-text,
+.search-box.is-compact .placeholder-text,
+.search-box.is-compact .search-input {
+  font-size: 20px;
+}
+
+.search-box.is-compact .search-input {
+  height: 38px;
+}
+
+.search-box.is-compact .pasted-image-thumbnail {
+  width: 38px;
+  height: 38px;
+}
+
+.search-box.is-compact .pasted-files,
+.search-box.is-compact .pasted-text {
+  height: 32px;
+  padding-inline: 10px;
+}
+
+.search-box.is-compact .plugin-tag {
+  height: 32px;
+  border-radius: 16px;
+  padding-right: 3px;
+}
+
+.search-box.is-compact .plugin-tag-left {
+  height: 32px;
+  gap: 5px;
+  padding: 6px 7px;
+}
+
+.search-box.is-compact .plugin-tag.has-cmd .plugin-tag-left {
+  padding-right: 18px;
+}
+
+.search-box.is-compact .plugin-tag-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.search-box.is-compact .plugin-tag-title {
+  font-size: 15px;
+}
+
+.search-box.is-compact .plugin-tag-cmd {
+  font-size: 13px;
+  padding-inline: 3px;
+}
+
+.search-box.is-compact .plugin-tag-close {
+  width: 18px;
+  height: 18px;
+}
+
+.search-box.is-compact .search-btn,
+.search-box.is-compact .avatar-container {
+  width: 34px;
+  height: 34px;
+}
+
+.search-box.is-compact .avatar-spinner {
+  right: -3px;
+  width: 40px;
+  height: 40px;
+}
+
+.search-box.is-compact .update-notification {
+  border-radius: 7px;
+}
+
+.search-box.is-compact .update-action {
+  gap: 6px;
+  padding: 4px 6px 4px 9px;
+}
+
+.search-box.is-compact .update-text {
+  font-size: 12px;
+}
+
+.search-box.is-compact .update-action :deep(svg) {
+  width: 26px;
+  height: 26px;
+}
+
+.search-box.is-compact .update-dismiss {
+  top: -4px;
+  right: -4px;
+  width: 16px;
+  height: 16px;
+  font-size: 14px;
 }
 
 /* 拖放蒙版 */
@@ -1897,7 +2005,10 @@ defineExpose({
   border-radius: 50%;
   object-fit: cover;
   cursor: pointer;
-  transition: all 0.2s;
+  transition:
+    transform 0.2s,
+    box-shadow 0.2s,
+    border-radius 0.24s ease;
   -webkit-app-region: no-drag;
   /* 按钮不可拖动 */
   border: none;
@@ -1910,6 +2021,11 @@ defineExpose({
 .search-btn.plugin-logo {
   border-radius: 6px;
   object-fit: contain;
+}
+
+/* AI 调用期间将插件图标裁成圆形，避免圆形状态层外露出矩形四角。 */
+.avatar-wrapper.ai-active .search-btn.plugin-logo {
+  border-radius: 50%;
 }
 
 .search-btn:not(.plugin-logo):hover {

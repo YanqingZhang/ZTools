@@ -6,7 +6,8 @@ import hideWindowHtml from '../../../resources/hideWindow.html?asset'
 
 import mainPreload from '../../../resources/preload.js?asset'
 import api from '../api'
-import { WINDOW_INITIAL_HEIGHT, WINDOW_DEFAULT_HEIGHT, WINDOW_WIDTH } from '../common/constants'
+import { WINDOW_DEFAULT_HEIGHT, WINDOW_WIDTH } from '../common/constants'
+import { STANDARD_MAIN_WINDOW_HEADER_HEIGHT } from '../../shared/mainWindowLayout'
 import detachedWindowManager, {
   DETACHED_TITLEBAR_HEIGHT,
   type DetachedPluginUpgradeSnapshot
@@ -36,6 +37,7 @@ import {
   getPluginDataPrefix,
   getPluginSessionPartition
 } from '../../shared/pluginRuntimeNamespace'
+import aiRequestStatusTracker from '../core/aiRequestStatusTracker'
 
 console.log('[Plugin] mainPreload', mainPreload)
 
@@ -170,6 +172,16 @@ export class PluginManager {
   }
 
   /**
+   * 判断启动指定 feature 时是否应保持主窗口隐藏。
+   * @param pluginPath 插件目录路径。
+   * @param featureCode 要启动的 feature code。
+   * @returns feature 设置了 `mainHide: true` 时返回 true，否则返回 false。
+   */
+  public shouldKeepMainWindowHidden(pluginPath: string, featureCode: string): boolean {
+    return this.isFeatureMainHide(pluginPath, featureCode)
+  }
+
+  /**
    * 判断插件是否允许多开（pluginSetting.single 默认/true = 不可多开, false = 允许多开）
    */
   private isPluginMultiOpenAllowed(pluginPath: string): boolean {
@@ -208,9 +220,16 @@ export class PluginManager {
       console.log('[Plugin] 检测到无界面插件(Config):', pluginConfig.name)
       return { pluginUrl: pathToFileURL(hideWindowHtml).href, isConfigHeadless }
     }
-    if (isDevelopment && pluginConfig.development?.main) {
-      console.log('[Plugin] 开发中插件，使用 development.main:', pluginConfig.development.main)
-      return { pluginUrl: pluginConfig.development.main, isConfigHeadless }
+    if (isDevelopment) {
+      // E2E 使用独立端口，避免占用日常设置插件开发服务器的 5177 端口。
+      const developmentMain =
+        pluginConfig.name === 'setting' && process.env.ZTOOLS_SETTING_DEV_SERVER_URL
+          ? process.env.ZTOOLS_SETTING_DEV_SERVER_URL
+          : pluginConfig.development?.main
+      if (developmentMain) {
+        console.log('[Plugin] 开发中插件，使用 development.main:', developmentMain)
+        return { pluginUrl: developmentMain, isConfigHeadless }
+      }
     }
     if (pluginConfig.main.startsWith('http')) {
       console.log('[Plugin] 网络插件:', pluginConfig.main)
@@ -333,7 +352,7 @@ export class PluginManager {
   // 记录最近一次插件 ESC 触发的时间，用于短时间内抑制主窗口 hide
   private lastPluginEscTime: number | null = null
   // 插件默认高度（可配置）
-  private pluginDefaultHeight: number = WINDOW_DEFAULT_HEIGHT - WINDOW_INITIAL_HEIGHT
+  private pluginDefaultHeight: number = WINDOW_DEFAULT_HEIGHT - STANDARD_MAIN_WINDOW_HEADER_HEIGHT
   // 跟踪每个插件上次进入的状态（用于单例重入判断）
   private pluginLastEnterState: Map<string, PluginLastEnterState> = new Map()
 
@@ -625,7 +644,8 @@ export class PluginManager {
         featureCode
       })
       // 插件加载时，先将窗口高度设置为 1px，避免节流
-      api.resizeWindow(WINDOW_INITIAL_HEIGHT + 1)
+      const mainContentHeight = windowManager.getMainWindowHeaderHeight()
+      api.resizeWindow(mainContentHeight + 1)
       const pluginConfig = this.readPluginConfig(pluginPath)
       const isDevelopment = !!pluginInfoFromDB?.isDevelopment
       const effectiveName = pluginInfoFromDB?.name || pluginConfig.name
@@ -646,7 +666,7 @@ export class PluginManager {
       // 设置初始布局（使用固定宽度常量，避免多显示器 DPI 缩放导致尺寸漂移）
       const windowWidth = WINDOW_WIDTH
       // 设置初始高度为 1px，避免节流
-      this.pluginView.setBounds({ x: 0, y: WINDOW_INITIAL_HEIGHT, width: windowWidth, height: 1 })
+      this.pluginView.setBounds({ x: 0, y: mainContentHeight, width: windowWidth, height: 1 })
 
       // 缓存新创建的视图
       const logoUrl = this.buildPluginLogoUrl(pluginPath, pluginConfig.logo)
@@ -1452,14 +1472,19 @@ export class PluginManager {
     }
   }
 
-  // 设置插件视图高度
+  /**
+   * 设置主窗口插件视图高度，并按当前顶部栏高度同步窗口尺寸和视图偏移。
+   * @param height 插件正文期望高度，单位为像素。
+   * @param updateCache 是否更新当前插件缓存中的正文高度。
+   * @returns 无返回值。
+   */
   public setExpendHeight(height: number, updateCache: boolean = true): void {
     if (!this.mainWindow || !this.pluginView) return
 
     console.log('[Plugin] 设置插件高度:', height)
 
-    // 搜索框高度
-    const mainContentHeight = WINDOW_INITIAL_HEIGHT
+    // 顶部栏高度由当前紧凑模式统一决定。
+    const mainContentHeight = windowManager.getMainWindowHeaderHeight()
     // 计算总窗口高度
     const totalHeight = height + mainContentHeight
 
@@ -1517,11 +1542,16 @@ export class PluginManager {
     }
   }
 
-  // 更新插件视图大小（跟随窗口大小变化）
+  /**
+   * 根据主窗口尺寸更新当前插件视图边界。
+   * @param width 主窗口内容宽度，单位为像素。
+   * @param height 主窗口内容高度，单位为像素。
+   * @returns 无返回值。
+   */
   public updatePluginViewBounds(width: number, height: number): void {
     if (!this.pluginView) return
 
-    const mainContentHeight = WINDOW_INITIAL_HEIGHT
+    const mainContentHeight = windowManager.getMainWindowHeaderHeight()
     const viewHeight = height - mainContentHeight
 
     if (viewHeight > 0) {
@@ -1538,6 +1568,18 @@ export class PluginManager {
         cached.height = viewHeight
       }
     }
+  }
+
+  /**
+   * 在顶部栏密度变化后重新布局当前插件，并保持插件正文高度不变。
+   * @returns 无返回值。
+   */
+  public refreshMainWindowHeaderLayout(): void {
+    if (!this.pluginView) return
+
+    // 使用当前视图真实高度，避免切换密度时覆盖插件主动设置的高度。
+    const { height } = this.pluginView.getBounds()
+    this.setExpendHeight(height, false)
   }
 
   // 获取插件模式
@@ -1836,10 +1878,22 @@ export class PluginManager {
     })
   }
 
-  // 处理插件按 ESC 键
+  /**
+   * 处理主窗口插件 WebContents 上报的 ESC，并按用户设置返回搜索或直接隐藏。
+   * @returns 无返回值。
+   */
   public handlePluginEsc(): void {
     // 记录 ESC 触发时间
     this.lastPluginEscTime = Date.now()
+
+    const settings = databaseAPI.dbGet('settings-general') || {}
+    if (settings.hideMainWindowOnPluginEsc === true) {
+      // 隐藏流程会按已强制为 immediately 的自动返回配置在后台退出插件。
+      console.log('[Plugin] 插件按下 ESC，直接隐藏主窗口')
+      windowManager.hideWindow()
+      return
+    }
+
     console.log('[Plugin] 插件按下 ESC 键 (Main Process)，返回搜索页面')
     this.hidePluginView()
     windowManager.notifyBackToSearch()
@@ -2012,8 +2066,8 @@ export class PluginManager {
   }
 
   /**
-   * 分离当前插件到独立窗口
-   * 将当前在主窗口中运行的插件分离到一个独立的窗口中
+   * 将当前在主窗口中运行的插件视图迁移到独立窗口。
+   * @returns 分离是否成功以及可选错误信息
    */
   public async detachCurrentPlugin(): Promise<{ success: boolean; error?: string }> {
     if (!this.mainWindow || !this.pluginView || !this.currentPluginPath) {
@@ -2073,7 +2127,9 @@ export class PluginManager {
           searchQuery: cached.subInputValue || '',
           searchPlaceholder: cached.subInputPlaceholder || '搜索...',
           subInputVisible: cached.subInputVisible !== undefined ? cached.subInputVisible : true,
-          autoFocusSubInput: shouldAutoFocusSubInput // 只有主窗口输入框聚焦时才自动聚焦
+          autoFocusSubInput: shouldAutoFocusSubInput, // 只有主窗口输入框聚焦时才自动聚焦
+          // 独立标题栏可能晚于请求开始加载，因此初始化时同步当前聚合状态。
+          aiRequestStatus: aiRequestStatusTracker.get(cached.view.webContents.id)
         }
       )
 
@@ -2163,6 +2219,29 @@ export class PluginManager {
     }
 
     return null
+  }
+
+  /**
+   * 获取调用 WebContents 对应清单中的规范插件名称。
+   * @param webContents 插件页面的 WebContents 实例。
+   * @returns 清单名称与运行时插件匹配时返回规范名称，否则返回 null。
+   */
+  public getPluginManifestNameByWebContents(webContents: WebContents): string | null {
+    const pluginInfo = this.getPluginInfoByWebContents(webContents)
+    if (!pluginInfo) return null
+
+    try {
+      // 开发插件会附加 __dev 后缀，鉴权身份仍使用原始清单名称。
+      const manifestName = this.readPluginConfig(pluginInfo.path)?.name
+      if (typeof manifestName !== 'string' || !manifestName.trim()) return null
+      const canonicalName = manifestName.trim()
+      if (pluginInfo.name !== canonicalName && pluginInfo.name !== `${canonicalName}__dev`) {
+        return null
+      }
+      return canonicalName
+    } catch {
+      return null
+    }
   }
 
   /**

@@ -3,37 +3,30 @@ import defaultAvatar from '@/assets/image/default.png'
 import { AccountLoginDialog, useToast } from '@/components'
 import {
   ACCOUNT_CHANGED_EVENT,
-  ONLINE_SYNC_SERVER_URL,
   loginZToolsAccount,
   notifyAccountChanged,
   promptDefaultDataImportAfterLogin
 } from '@/composables/useZToolsAccount'
 import { MenuRouterItemType } from '@/router'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useAccountProfile, useNotificationCenter } from '@/composables'
 import { useRoute, useRouter } from 'vue-router'
 
 const router = useRouter()
 const route = useRoute()
 const { success, error, warning, confirm } = useToast()
+const { unreadCount, unreadLabel } = useNotificationCenter()
+const { state: accountProfile, refresh: refreshAccountProfile } = useAccountProfile()
 
 const menuRoutes = ref<MenuRouterItemType[]>([] as MenuRouterItemType[])
-const loggedIn = ref(false)
-const username = ref('')
-const nickname = ref('')
-const avatar = ref(defaultAvatar)
 const loginVisible = ref(false)
 const loggingIn = ref(false)
 const loginUsername = ref('')
-let accountLoadVersion = 0
+let stopSyncStatusListener: (() => void) | null = null
 
-interface AccountProfileCache {
-  uid: string
-  nickname?: string
-  avatarUrl?: string
-  updatedAt: number
-}
-
-const displayName = computed(() => nickname.value || username.value || 'ZTools 用户')
+const loggedIn = computed(() => accountProfile.loggedIn)
+const avatar = computed(() => accountProfile.avatarUrl || defaultAvatar)
+const displayName = computed(() => accountProfile.nickname || accountProfile.uid || 'ZTools 用户')
 
 /**
  * 切换右侧设置页面。
@@ -56,121 +49,41 @@ const autoLoadRouter = (): void => {
 
 onMounted(() => {
   autoLoadRouter()
-  void loadAccount()
+  void loadAccount(false)
   window.addEventListener(ACCOUNT_CHANGED_EVENT, handleAccountChanged)
+  stopSyncStatusListener =
+    window.ztools.internal.onSyncStatusChanged?.((payload = {}) => {
+      if (payload.credentialsInvalidated || payload.accountCredentialsInvalidated) {
+        void loadAccount(true)
+      }
+    }) || null
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener(ACCOUNT_CHANGED_EVENT, handleAccountChanged)
+  stopSyncStatusListener?.()
+  stopSyncStatusListener = null
 })
 
+/**
+ * 响应账号会话或资料变化并强制刷新共享状态。
+ * @returns 无返回值
+ */
 function handleAccountChanged(): void {
-  void loadAccount()
-}
-
-async function loadAccount(): Promise<void> {
-  const version = (accountLoadVersion += 1)
-  try {
-    const result = await window.ztools.internal.syncGetConfig()
-    const config = result.success ? result.config : null
-    const uid = config?.username || ''
-    const isLoggedIn = Boolean(config?.token && config.serverUrl === ONLINE_SYNC_SERVER_URL && uid)
-    if (version !== accountLoadVersion) return
-
-    loginUsername.value = uid
-    if (isLoggedIn) {
-      const cachedProfile = await readCachedProfile(uid)
-      if (version !== accountLoadVersion) return
-
-      loggedIn.value = true
-      applyProfile(cachedProfile, uid)
-      void refreshProfile(uid, version)
-    } else {
-      clearAccountState()
-    }
-  } catch {
-    if (version === accountLoadVersion) clearAccountState()
-  }
-}
-
-function profileCacheKey(uid: string): string {
-  return `account-profile-cache:${uid}`
-}
-
-async function readCachedProfile(uid: string): Promise<AccountProfileCache | null> {
-  if (!uid) return null
-  try {
-    const cached = await window.ztools.internal.dbGet(profileCacheKey(uid))
-    if (!cached || typeof cached !== 'object') return null
-    return {
-      uid: typeof cached.uid === 'string' ? cached.uid : uid,
-      nickname: typeof cached.nickname === 'string' ? cached.nickname : '',
-      avatarUrl: typeof cached.avatarUrl === 'string' ? cached.avatarUrl : '',
-      updatedAt: Number(cached.updatedAt || 0)
-    }
-  } catch {
-    return null
-  }
-}
-
-async function writeCachedProfile(profile: AccountProfileCache): Promise<void> {
-  if (!profile.uid) return
-  try {
-    await window.ztools.internal.dbPut(profileCacheKey(profile.uid), {
-      uid: profile.uid,
-      nickname: profile.nickname || '',
-      avatarUrl: profile.avatarUrl || '',
-      updatedAt: profile.updatedAt || Date.now()
-    })
-  } catch {
-    // 缓存失败不影响账号主流程。
-  }
-}
-
-function applyProfile(
-  profile: AccountProfileCache | null,
-  fallbackUid: string = username.value
-): void {
-  username.value = profile?.uid || fallbackUid
-  nickname.value = profile?.nickname || ''
-  avatar.value = profile?.avatarUrl || defaultAvatar
+  void loadAccount(true)
 }
 
 /**
- * 清理当前账号展示状态，并在当前页面失效时回到通用设置。
- * @returns 无返回值
+ * 刷新共享账号资料，并在登录态失效时退出个人中心。
+ * @param force 是否废弃正在执行的刷新并重新请求服务端
+ * @returns 刷新完成后结束的 Promise
  */
-function clearAccountState(): void {
-  // 登录态失效后离开账号页面，避免继续展示过期账号信息。
-  if (route.name === 'Account') {
-    void router.replace({ name: 'GeneralSetting' })
-  }
-  loggedIn.value = false
-  username.value = ''
-  nickname.value = ''
-  avatar.value = defaultAvatar
-}
-
-async function refreshProfile(
-  expectedUid: string,
-  version: number = accountLoadVersion
-): Promise<void> {
-  try {
-    const result = await window.ztools.internal.syncGetAccountProfile()
-    if (version !== accountLoadVersion) return
-    if (result.success && result.profile) {
-      const profile = {
-        uid: result.profile.uid || expectedUid,
-        nickname: result.profile.nickname || '',
-        avatarUrl: result.profile.avatarUrl || '',
-        updatedAt: Date.now()
-      }
-      if (profile.uid !== expectedUid) return
-      applyProfile(profile, expectedUid)
-      await writeCachedProfile(profile)
-    }
-  } catch {
-    // 远端 profile 拉取失败时保留本地缓存展示，避免头像和昵称闪回默认值。
+async function loadAccount(force: boolean = false): Promise<void> {
+  await refreshAccountProfile({ force })
+  loginUsername.value = accountProfile.uid
+  if (!accountProfile.loggedIn && route.name === 'Account') {
+    // 登录态失效后离开账号页面，避免继续展示过期账号信息。
+    await router.replace({ name: 'GeneralSetting' })
   }
 }
 
@@ -186,6 +99,14 @@ function openAccount(): void {
     // 未登录时仍需通过对话框完成账号认证。
     loginVisible.value = true
   }
+}
+
+/**
+ * 打开设置插件内的消息中心。
+ * @returns 无返回值。
+ */
+function openNotifications(): void {
+  void router.replace({ name: 'Notifications' })
 }
 
 async function submitLogin(
@@ -221,18 +142,12 @@ async function handleGithubLoginSuccess(data: {
   isNew: boolean
 }): Promise<void> {
   try {
-    // 保存配置（与账号密码登录相同的逻辑）
-    const configResult = await window.ztools.internal.syncGetConfig()
-    const currentConfig = configResult.success ? configResult.config : null
-
-    await window.ztools.internal.syncSaveConfig({
-      enabled: Boolean(currentConfig?.enabled),
-      serverUrl: ONLINE_SYNC_SERVER_URL,
+    const saved = await window.ztools.internal.accountSaveSession({
       token: data.token,
       refreshToken: data.refreshToken,
-      syncInterval: currentConfig?.syncInterval || 30,
       username: data.username
     })
+    if (!saved.success) throw new Error(saved.error || '保存官方账号失败')
 
     // 关闭登录对话框
     loginVisible.value = false
@@ -271,21 +186,36 @@ async function handleGithubLoginSuccess(data: {
       </div>
     </div>
 
-    <button
-      class="account-dock"
-      :class="{ active: route.name === 'Account' }"
-      type="button"
-      @click="openAccount"
+    <div
+      class="sidebar-footer"
+      :class="{ active: route.name === 'Account' || route.name === 'Notifications' }"
     >
-      <img v-if="loggedIn" class="account-avatar" :src="avatar" alt="" />
-      <div v-else class="account-avatar account-placeholder">
-        <div class="i-z-cloud" />
-      </div>
-      <div class="account-info">
-        <strong>{{ loggedIn ? displayName : '注册/登录 ZTools' }}</strong>
-        <span>{{ loggedIn ? '查看个人中心' : '同步数据与评论互动' }}</span>
-      </div>
-    </button>
+      <button
+        class="account-dock"
+        :class="{ active: route.name === 'Account' }"
+        type="button"
+        @click="openAccount"
+      >
+        <img v-if="loggedIn" class="account-avatar" :src="avatar" alt="" />
+        <div v-else class="account-avatar account-placeholder">
+          <div class="i-z-cloud" />
+        </div>
+        <div class="account-info">
+          <strong>{{ loggedIn ? displayName : '注册/登录 ZTools' }}</strong>
+          <span>{{ loggedIn ? '查看个人中心' : '同步数据与评论互动' }}</span>
+        </div>
+      </button>
+      <button
+        class="notification-dock"
+        :class="{ active: route.name === 'Notifications' }"
+        type="button"
+        title="消息中心"
+        @click="openNotifications"
+      >
+        <div class="i-z-bell" />
+        <span v-if="unreadCount > 0" class="notification-badge">{{ unreadLabel }}</span>
+      </button>
+    </div>
 
     <AccountLoginDialog
       v-model:visible="loginVisible"
@@ -347,10 +277,11 @@ async function handleGithubLoginSuccess(data: {
   grid-template-columns: 36px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
-  width: 100%;
+  min-width: 0;
+  flex: 1;
   border: 0;
   border-radius: 8px;
-  background: var(--card-bg, var(--bg-color));
+  background: transparent;
   color: var(--text-color);
   cursor: pointer;
   padding: 10px;
@@ -358,13 +289,75 @@ async function handleGithubLoginSuccess(data: {
   transition: all 0.2s;
 }
 
-.account-dock:hover {
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 8px 8px;
+  border-radius: 8px;
+}
+
+.sidebar-footer.active {
+  background: var(--active-bg);
+}
+
+.sidebar-footer:not(.active):hover {
   background: var(--hover-bg);
+}
+
+.notification-dock {
+  position: relative;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.notification-dock:hover {
+  background: transparent;
+  color: var(--text-color);
+}
+
+.notification-dock.active {
+  background: transparent;
+  color: var(--primary-color);
+}
+
+.notification-badge {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 15px;
+  height: 15px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--bg-color);
+  border-radius: 8px;
+  background: #ef4444;
+  color: white;
+  padding: 0 3px;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.account-dock:hover {
+  background: transparent;
   border-color: color-mix(in srgb, var(--primary-color) 35%, var(--divider-color));
 }
 
 .account-dock.active {
-  background: var(--active-bg);
+  background: transparent;
   color: var(--primary-color);
 }
 

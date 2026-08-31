@@ -1,181 +1,113 @@
 import { ipcMain } from 'electron'
-import databaseAPI from '../shared/database'
+import aiProviderService from '../../core/aiProviderService.js'
+import officialAIService from '../../core/officialAIService.js'
+import type {
+  AiProviderInput,
+  AiProviderMutationResult,
+  AiProviderStore,
+  AiRemoteModel,
+  OfficialAiProviderStatus
+} from '../../../shared/aiProviderShared.js'
 
 /**
- * AI 模型数据结构
- */
-export interface AiModel {
-  id: string // 模型ID（例如：qwen-plus-latest）
-  label: string // 模型名称（例如：通义千问）
-  apiUrl: string // API地址（必须使用与 OpenAI 兼容的 API 格式）
-  apiKey: string // API密钥
-  description?: string // 模型描述
-  icon?: string // 模型图标
-  cost?: number // 模型调用消耗
-}
-
-/**
- * AI 模型管理 API（主程序渲染进程专用）
+ * AI 供应商管理 API，供主渲染进程和内置设置插件复用。
  */
 class AiModelsAPI {
-  private readonly DB_KEY = 'ai-models' // databaseAPI 会自动添加 ZTOOLS/ 前缀
-
   /**
-   * 初始化 API
+   * 初始化 AI 供应商管理 IPC。
+   * @returns 无返回值
    */
   public init(): void {
     this.setupIPC()
   }
 
   /**
-   * 设置 IPC 处理器
+   * 注册主渲染进程使用的 AI 供应商管理通道。
+   * @returns 无返回值
    */
   private setupIPC(): void {
-    // 获取所有 AI 模型
-    ipcMain.handle('ai-models:get-all', async () => {
-      try {
-        const models = this.getAllModels()
-        return { success: true, data: models }
-      } catch (error: unknown) {
-        console.error('[AIModels] 获取 AI 模型列表失败:', error)
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : '未知错误'
-        }
-      }
-    })
-
-    // 添加 AI 模型
-    ipcMain.handle('ai-models:add', (_event, model: AiModel) => {
-      try {
-        const result = this.addModel(model)
-        return result
-      } catch (error: unknown) {
-        console.error('[AIModels] 添加 AI 模型失败:', error)
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : '未知错误'
-        }
-      }
-    })
-
-    // 更新 AI 模型
-    ipcMain.handle('ai-models:update', (_event, model: AiModel) => {
-      try {
-        const result = this.updateModel(model)
-        return result
-      } catch (error: unknown) {
-        console.error('[AIModels] 更新 AI 模型失败:', error)
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : '未知错误'
-        }
-      }
-    })
-
-    // 删除 AI 模型
-    ipcMain.handle('ai-models:delete', (_event, modelId: string) => {
-      try {
-        const result = this.deleteModel(modelId)
-        return result
-      } catch (error: unknown) {
-        console.error('[AIModels] 删除 AI 模型失败:', error)
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : '未知错误'
-        }
-      }
-    })
+    ipcMain.handle('ai-providers:get-all', () => this.getAllProviders())
+    ipcMain.handle('ai-providers:get-official', () => this.getOfficialProvider())
+    ipcMain.handle('ai-providers:add', (_event, provider: AiProviderInput) =>
+      this.addProvider(provider)
+    )
+    ipcMain.handle('ai-providers:update', (_event, provider: AiProviderInput) =>
+      this.updateProvider(provider)
+    )
+    ipcMain.handle('ai-providers:delete', (_event, providerId: string) =>
+      this.deleteProvider(providerId)
+    )
+    ipcMain.handle('ai-providers:set-enabled', (_event, providerId: string, enabled: boolean) =>
+      this.setProviderEnabled(providerId, enabled)
+    )
+    ipcMain.handle('ai-providers:fetch-models', (_event, apiUrl: string, apiKey: string) =>
+      this.fetchModels(apiUrl, apiKey)
+    )
   }
 
   /**
-   * 获取所有 AI 模型
+   * 获取完整的 AI 供应商配置。
+   * @returns 当前供应商文档
    */
-  public getAllModels(): AiModel[] {
-    try {
-      const data = databaseAPI.dbGet(this.DB_KEY)
-      if (data && Array.isArray(data)) {
-        return data
-      }
-      return []
-    } catch {
-      // 如果文档不存在，返回空数组
-      return []
-    }
+  public getAllProviders(): AiProviderStore {
+    return aiProviderService.getStore()
   }
 
   /**
-   * 添加 AI 模型
+   * 获取只读的 ZTools 官方模型及当前登录状态。
+   * @returns 官方供应商状态
    */
-  public addModel(model: AiModel): { success: boolean; error?: string } {
-    // 验证必填字段
-    if (!model.id || !model.label || !model.apiUrl || !model.apiKey) {
-      return { success: false, error: '模型ID、名称、API地址和密钥不能为空' }
-    }
-
-    const models = this.getAllModels()
-
-    // 检查是否已存在相同 ID 的模型
-    if (models.some((m: AiModel) => m.id === model.id)) {
-      return { success: false, error: '该模型ID已存在' }
-    }
-
-    // 添加新模型
-    models.push(model)
-
-    // 保存到数据库（databaseAPI 会自动处理 _rev）
-    databaseAPI.dbPut(this.DB_KEY, models)
-
-    return { success: true }
+  public async getOfficialProvider(): Promise<OfficialAiProviderStatus> {
+    return officialAIService.getProviderStatus()
   }
 
   /**
-   * 更新 AI 模型
+   * 添加一个 AI 供应商。
+   * @param provider 供应商连接信息和已选模型
+   * @returns 操作结果及最新供应商文档
    */
-  public updateModel(model: AiModel): { success: boolean; error?: string } {
-    // 验证必填字段
-    if (!model.id || !model.label || !model.apiUrl || !model.apiKey) {
-      return { success: false, error: '模型ID、名称、API地址和密钥不能为空' }
-    }
-
-    const models = this.getAllModels()
-
-    // 查找要更新的模型
-    const index = models.findIndex((m: AiModel) => m.id === model.id)
-    if (index === -1) {
-      return { success: false, error: '未找到该模型' }
-    }
-
-    // 更新模型
-    models[index] = model
-
-    // 保存到数据库（databaseAPI 会自动处理 _rev）
-    databaseAPI.dbPut(this.DB_KEY, models)
-
-    return { success: true }
+  public addProvider(provider: AiProviderInput): AiProviderMutationResult {
+    return aiProviderService.addProvider(provider)
   }
 
   /**
-   * 删除 AI 模型
+   * 更新一个 AI 供应商。
+   * @param provider 带内部 ID 的供应商配置
+   * @returns 操作结果及最新供应商文档
    */
-  public deleteModel(modelId: string): { success: boolean; error?: string } {
-    const models = this.getAllModels()
+  public updateProvider(provider: AiProviderInput): AiProviderMutationResult {
+    return aiProviderService.updateProvider(provider)
+  }
 
-    // 查找要删除的模型
-    const index = models.findIndex((m: AiModel) => m.id === modelId)
-    if (index === -1) {
-      return { success: false, error: '未找到该模型' }
-    }
+  /**
+   * 删除供应商及其已选模型。
+   * @param providerId 供应商内部 ID
+   * @returns 操作结果及最新供应商文档
+   */
+  public deleteProvider(providerId: string): AiProviderMutationResult {
+    return aiProviderService.deleteProvider(providerId)
+  }
 
-    // 删除模型
-    models.splice(index, 1)
+  /**
+   * 开启或关闭指定 AI 供应商。
+   * @param providerId 供应商内部 ID
+   * @param enabled 是否允许插件发现和调用该供应商
+   * @returns 操作结果及最新供应商文档
+   */
+  public setProviderEnabled(providerId: string, enabled: boolean): AiProviderMutationResult {
+    return aiProviderService.setProviderEnabled(providerId, enabled)
+  }
 
-    // 保存到数据库（databaseAPI 会自动处理 _rev）
-    databaseAPI.dbPut(this.DB_KEY, models)
-
-    return { success: true }
+  /**
+   * 拉取 OpenAI 兼容供应商公开的模型列表。
+   * @param apiUrl 供应商接口基础地址
+   * @param apiKey 供应商 API 密钥
+   * @returns 远端模型摘要列表
+   * @throws 供应商拒绝请求、超时或返回异常时抛出错误
+   */
+  public async fetchModels(apiUrl: string, apiKey: string): Promise<AiRemoteModel[]> {
+    return aiProviderService.fetchRemoteModels(apiUrl, apiKey)
   }
 }
 
-// 导出单例
 export default new AiModelsAPI()

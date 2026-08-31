@@ -23,11 +23,13 @@ import pluginToolsAPI from './tools'
 import databaseAPI from '../shared/database'
 import { analyzeImage } from '../shared/imageAnalysis'
 import updaterAPI from '../updater.js'
+import notificationsAPI from '../renderer/notifications.js'
 import {
   COMMAND_ALIASES_KEY,
   normalizeCommandAliases,
   type CommandAliasStore
 } from '@shared/commandShared'
+import { normalizeSearchWallpaperConfig, type SearchWallpaperConfig } from '@shared/searchWallpaper'
 
 /**
  * 权限错误类
@@ -83,6 +85,7 @@ export class InternalPluginAPI {
 
   /**
    * 注册仅允许内置插件访问的 IPC 能力。
+   * @returns 无返回值
    */
   private setupIPC(): void {
     // ==================== 数据库 API (ZTOOLS/ 命名空间) ====================
@@ -412,11 +415,11 @@ export class InternalPluginAPI {
 
     ipcMain.handle(
       'internal:fetch-plugin-market-comments',
-      async (event, pluginName: string, page?: number, pageSize?: number) => {
+      async (event, pluginName: string, page?: number, pageSize?: number, anchorId?: number) => {
         if (!requireInternalPlugin(this.pluginManager, event)) {
           throw new PermissionDeniedError('internal:fetch-plugin-market-comments')
         }
-        return await pluginsAPI.market.fetchComments(pluginName, page, pageSize)
+        return await pluginsAPI.market.fetchComments(pluginName, page, pageSize, anchorId)
       }
     )
 
@@ -445,6 +448,44 @@ export class InternalPluginAPI {
         throw new PermissionDeniedError('internal:delete-plugin-market-comment')
       }
       return await pluginsAPI.market.deleteComment(commentId)
+    })
+
+    ipcMain.handle('internal:notification-summary', async (event) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:notification-summary')
+      }
+      return await notificationsAPI.summary()
+    })
+
+    ipcMain.handle(
+      'internal:notification-list',
+      async (event, beforeId?: number, limit?: number, unreadOnly?: boolean) => {
+        if (!requireInternalPlugin(this.pluginManager, event)) {
+          throw new PermissionDeniedError('internal:notification-list')
+        }
+        return await notificationsAPI.list(beforeId, limit, unreadOnly)
+      }
+    )
+
+    ipcMain.handle('internal:notification-mark-read', async (event, id: number) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:notification-mark-read')
+      }
+      return await notificationsAPI.markRead(id)
+    })
+
+    ipcMain.handle('internal:notification-mark-all-read', async (event) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:notification-mark-all-read')
+      }
+      return await notificationsAPI.markAllRead()
+    })
+
+    ipcMain.handle('internal:notification-archive', async (event, id: number) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:notification-archive')
+      }
+      return await notificationsAPI.archive(id)
     })
 
     ipcMain.handle('internal:install-plugin-from-market', async (event, plugin: any) => {
@@ -580,14 +621,14 @@ export class InternalPluginAPI {
       }
     })
 
-    // ==================== AI 模型管理 API ====================
-    ipcMain.handle('internal:ai-models-get-all', async (event) => {
+    // ==================== AI 供应商管理 API ====================
+    ipcMain.handle('internal:ai-providers-get-all', async (event) => {
       if (!requireInternalPlugin(this.pluginManager, event)) {
-        throw new PermissionDeniedError('internal:ai-models-get-all')
+        throw new PermissionDeniedError('internal:ai-providers-get-all')
       }
       try {
-        const models = aiModelsAPI.getAllModels()
-        return { success: true, data: models }
+        const providers = aiModelsAPI.getAllProviders()
+        return { success: true, data: providers }
       } catch (error: unknown) {
         return {
           success: false,
@@ -596,26 +637,68 @@ export class InternalPluginAPI {
       }
     })
 
-    ipcMain.handle('internal:ai-models-add', async (event, model: any) => {
+    ipcMain.handle('internal:ai-providers-get-official', async (event) => {
       if (!requireInternalPlugin(this.pluginManager, event)) {
-        throw new PermissionDeniedError('internal:ai-models-add')
+        throw new PermissionDeniedError('internal:ai-providers-get-official')
       }
-      return await aiModelsAPI.addModel(model)
+      try {
+        return { success: true, data: await aiModelsAPI.getOfficialProvider() }
+      } catch (error: unknown) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '获取官方模型失败'
+        }
+      }
     })
 
-    ipcMain.handle('internal:ai-models-update', async (event, model: any): Promise<any> => {
+    ipcMain.handle('internal:ai-providers-add', async (event, provider: any) => {
       if (!requireInternalPlugin(this.pluginManager, event)) {
-        throw new PermissionDeniedError('internal:ai-models-update')
+        throw new PermissionDeniedError('internal:ai-providers-add')
       }
-      return await aiModelsAPI.updateModel(model)
+      return aiModelsAPI.addProvider(provider)
     })
 
-    ipcMain.handle('internal:ai-models-delete', async (event, modelId: string) => {
+    ipcMain.handle('internal:ai-providers-update', async (event, provider: any): Promise<any> => {
       if (!requireInternalPlugin(this.pluginManager, event)) {
-        throw new PermissionDeniedError('internal:ai-models-delete')
+        throw new PermissionDeniedError('internal:ai-providers-update')
       }
-      return await aiModelsAPI.deleteModel(modelId)
+      return aiModelsAPI.updateProvider(provider)
     })
+
+    ipcMain.handle('internal:ai-providers-delete', async (event, providerId: string) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:ai-providers-delete')
+      }
+      return aiModelsAPI.deleteProvider(providerId)
+    })
+
+    ipcMain.handle(
+      'internal:ai-providers-set-enabled',
+      async (event, providerId: string, enabled: boolean) => {
+        if (!requireInternalPlugin(this.pluginManager, event)) {
+          throw new PermissionDeniedError('internal:ai-providers-set-enabled')
+        }
+        return aiModelsAPI.setProviderEnabled(providerId, enabled)
+      }
+    )
+
+    ipcMain.handle(
+      'internal:ai-providers-fetch-models',
+      async (event, apiUrl: string, apiKey: string) => {
+        if (!requireInternalPlugin(this.pluginManager, event)) {
+          throw new PermissionDeniedError('internal:ai-providers-fetch-models')
+        }
+        try {
+          const data = await aiModelsAPI.fetchModels(apiUrl, apiKey)
+          return { success: true, data }
+        } catch (error: unknown) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : '获取模型列表失败'
+          }
+        }
+      }
+    )
 
     // ==================== Provider（翻译 / OCR 等）管理 API ====================
     ipcMain.handle('internal:providers-get-all', async (event, type?: string) => {
@@ -831,6 +914,13 @@ export class InternalPluginAPI {
       return await settingsAPI.setWindowDefaultHeight(height)
     })
 
+    ipcMain.handle('internal:set-compact-main-window-header', async (event, enabled: boolean) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:set-compact-main-window-header')
+      }
+      return settingsAPI.setCompactMainWindowHeader(enabled)
+    })
+
     ipcMain.handle('internal:select-avatar', async (event) => {
       if (!requireInternalPlugin(this.pluginManager, event)) {
         throw new PermissionDeniedError('internal:select-avatar')
@@ -843,6 +933,13 @@ export class InternalPluginAPI {
         throw new PermissionDeniedError('internal:select-image-file')
       }
       return await systemAPI.selectImageFile()
+    })
+
+    ipcMain.handle('internal:select-search-wallpaper', async (event) => {
+      if (!requireInternalPlugin(this.pluginManager, event)) {
+        throw new PermissionDeniedError('internal:select-search-wallpaper')
+      }
+      return await systemAPI.selectSearchWallpaper()
     })
 
     ipcMain.handle('internal:set-theme', async (event, theme: string) => {
@@ -925,6 +1022,21 @@ export class InternalPluginAPI {
       return { success: true }
     })
 
+    // 主搜索壁纸只属于宿主搜索视图，不向超级面板或分离窗口广播。
+    ipcMain.handle(
+      'internal:update-search-wallpaper',
+      async (event, wallpaper: SearchWallpaperConfig | null) => {
+        if (!requireInternalPlugin(this.pluginManager, event)) {
+          throw new PermissionDeniedError('internal:update-search-wallpaper')
+        }
+
+        // 在跨进程边界再次规范化，避免无效路径配置进入主渲染进程。
+        const normalizedWallpaper = normalizeSearchWallpaperConfig(wallpaper)
+        this.mainWindow?.webContents.send('update-search-wallpaper', normalizedWallpaper)
+        return { success: true }
+      }
+    )
+
     // 通知主渲染进程更新自动粘贴配置
     ipcMain.handle('internal:update-auto-paste', async (event, autoPaste: string) => {
       if (!requireInternalPlugin(this.pluginManager, event)) {
@@ -954,6 +1066,27 @@ export class InternalPluginAPI {
         }
         // 直接通知 windowManager 更新配置
         await windowAPI.updateAutoBackToSearch(autoBackToSearch)
+        return { success: true }
+      }
+    )
+
+    ipcMain.handle(
+      'internal:update-hide-main-window-on-plugin-esc',
+      async (event, enabled: boolean) => {
+        if (!requireInternalPlugin(this.pluginManager, event)) {
+          throw new PermissionDeniedError('internal:update-hide-main-window-on-plugin-esc')
+        }
+
+        const hideMainWindowOnPluginEsc = enabled === true
+        // 主渲染层处理顶部栏获得焦点时的 ESC，插件 WebContents 路径由主进程读取持久化配置。
+        this.mainWindow?.webContents.send(
+          'update-hide-main-window-on-plugin-esc',
+          hideMainWindowOnPluginEsc
+        )
+        if (hideMainWindowOnPluginEsc) {
+          // 直接隐藏后必须立即退出插件，保证下次呼出显示搜索页。
+          await windowAPI.updateAutoBackToSearch('immediately')
+        }
         return { success: true }
       }
     )

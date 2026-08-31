@@ -26,13 +26,15 @@ import {
 describe('requestPluginMarket', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockPut.mockResolvedValue({ ok: true, id: 'AUTH/official-account', rev: '2-test' })
     mockGet.mockResolvedValue({
-      _id: 'SYNC/config',
+      _id: 'AUTH/official-account',
       _rev: '1-test',
       data: {
-        serverUrl: 'wss://z-tools.top',
+        serverUrl: 'wss://z.zosen.link',
         token: 'expired-token',
-        refreshToken: 'expired-refresh-token'
+        refreshToken: 'expired-refresh-token',
+        username: 'official-user'
       }
     })
   })
@@ -69,12 +71,13 @@ describe('requestPluginMarket', () => {
 
   it('persists refreshed tokens and retries with the new access token', async () => {
     const oldConfig = {
-      _id: 'SYNC/config',
+      _id: 'AUTH/official-account',
       _rev: '1-test',
       data: {
-        serverUrl: 'wss://z-tools.top',
+        serverUrl: 'wss://z.zosen.link',
         token: 'expired-token',
-        refreshToken: 'expired-refresh-token'
+        refreshToken: 'expired-refresh-token',
+        username: 'official-user'
       }
     }
     const newConfig = {
@@ -87,6 +90,8 @@ describe('requestPluginMarket', () => {
     }
     mockGet
       .mockReset()
+      .mockResolvedValueOnce(oldConfig)
+      .mockResolvedValueOnce(oldConfig)
       .mockResolvedValueOnce(oldConfig)
       .mockResolvedValueOnce(oldConfig)
       .mockResolvedValueOnce(oldConfig)
@@ -107,7 +112,7 @@ describe('requestPluginMarket', () => {
     expect(mockHttpRequest.mock.calls[2][1].headers.Authorization).toBe('Bearer new-token')
     expect(mockPut).toHaveBeenCalledWith(
       expect.objectContaining({
-        _id: 'SYNC/config',
+        _id: 'AUTH/official-account',
         data: expect.objectContaining({
           token: 'new-token',
           refreshToken: 'new-refresh-token'

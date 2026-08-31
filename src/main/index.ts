@@ -1,4 +1,5 @@
 import { app, dialog, shell } from 'electron'
+import './core/appData/configureAppDataRoot'
 import {
   checkRuntimeCompatibility,
   EXPECTED_ELECTRON_VERSION,

@@ -273,7 +273,8 @@ export const useCommandDataStore = defineStore('commandData', () => {
   const rawAppsCache = ref<any[]>([])
   const enabledPluginsCache = ref<any[]>([])
   const systemSettingCommandsCache = ref<Command[]>([])
-  const localShortcutCommandsCache = ref<Command[]>([])
+  // 存原始本地启动项数据（保留 name/alias），由 buildLocalShortcutCommandItems 映射为搜索指令
+  const localShortcutCommandsCache = ref<any[]>([])
   const loading = ref(false)
   const fuse = ref<Fuse<Command> | null>(null)
   let loadCommandsRequestId = 0
@@ -453,11 +454,18 @@ export const useCommandDataStore = defineStore('commandData', () => {
 
   function getLaunchableAliasEntries(command: Command, aliasesMap: CommandAliasStore): Command[] {
     const cmdType = command.cmdType || 'text'
-    const isPluginLaunchable = command.type === 'plugin' && ['text', 'window'].includes(cmdType)
-    const isDirectAppLaunchable =
-      command.type === 'direct' && command.subType === 'app' && cmdType === 'text'
+    // 插件指令：text/window 为主动型（关键词搜索），regex/over/img/files 为匹配型
+    // （由 matchCmd 命中粘贴内容后展示）。别名均需展开，由调用方决定结果进哪个集合。
+    const isPluginLaunchable =
+      command.type === 'plugin' &&
+      ['text', 'window', 'regex', 'over', 'img', 'files'].includes(cmdType)
+    // direct 类：系统应用与本地启动项均为主动型，别名进关键词索引。
+    const isDirectLaunchable =
+      command.type === 'direct' &&
+      (command.subType === 'app' || command.subType === 'local-shortcut') &&
+      cmdType === 'text'
 
-    if (!isPluginLaunchable && !isDirectAppLaunchable) {
+    if (!isPluginLaunchable && !isDirectLaunchable) {
       return []
     }
 
@@ -480,6 +488,38 @@ export const useCommandDataStore = defineStore('commandData', () => {
       ...((baseApp as any).aliases || [])
         .filter((alias: unknown): alias is string => typeof alias === 'string')
         .map((alias) => alias.toLowerCase())
+    ])
+
+    const results: Command[] = []
+    for (const aliasCommand of aliasCommands) {
+      const normalizedAlias = aliasCommand.name.toLowerCase()
+      if (seenNames.has(normalizedAlias)) {
+        continue
+      }
+      seenNames.add(normalizedAlias)
+      results.push(aliasCommand)
+    }
+
+    return results
+  }
+
+  /**
+   * 展开本地启动项的指令别名，并跳过与显示名/原始文件名重复的别名。
+   * 与 expandDirectAppAliases 对称：本地启动项无内置 aliases 数组，
+   * 但显示名（alias || name）与原始文件名均需参与去重。
+   */
+  function expandDirectLocalShortcutAliases(
+    baseShortcut: Command,
+    aliasesMap: CommandAliasStore
+  ): Command[] {
+    const aliasCommands = getLaunchableAliasEntries(baseShortcut, aliasesMap)
+    if (!aliasCommands.length) {
+      return []
+    }
+
+    const seenNames = new Set<string>([
+      baseShortcut.name.toLowerCase(),
+      ...(baseShortcut.originalName ? [baseShortcut.originalName.toLowerCase()] : [])
     ])
 
     const results: Command[] = []
@@ -1064,7 +1104,12 @@ export const useCommandDataStore = defineStore('commandData', () => {
               regexItems.push(matchCommand)
 
               if (cmd.type === 'window') {
+                // window 为主动型，别名进关键词索引
                 pluginItems.push(...getLaunchableAliasEntries(matchCommand, commandAliases))
+              } else {
+                // regex/over/img/files 为匹配型，别名进匹配索引，
+                // 仅在粘贴内容被 matchCmd 命中后展示，避免无内容时把关键词误传给插件
+                regexItems.push(...getLaunchableAliasEntries(matchCommand, commandAliases))
               }
             } else {
               const textCommand: Command = {
@@ -1135,6 +1180,51 @@ export const useCommandDataStore = defineStore('commandData', () => {
     })
   }
 
+  /**
+   * 从原始本地启动项数据构建搜索指令列表。
+   * - 显示名取 alias || name，并保留 originalName 以兼容旧版禁用键。
+   * - 若用户设置了 alias 且与原始文件名不同，额外补一条原始文件名指令，
+   *   使设别名后原始文件名仍可被搜索到（拼音按原名重算，因主进程仅按显示名存了拼音）。
+   * - 展开快捷键设置页配置的指令别名（机制B）。
+   */
+  function buildLocalShortcutCommandItems(
+    rawShortcuts: any[],
+    commandAliases: CommandAliasStore
+  ): Command[] {
+    return rawShortcuts.flatMap((s) => {
+      const displayName = s.alias || s.name
+      const baseShortcut: Command = {
+        name: displayName,
+        path: s.path,
+        icon: s.icon,
+        type: 'direct' as const,
+        subType: 'local-shortcut' as const,
+        originalName: s.name,
+        pinyin: s.pinyin || '',
+        pinyinAbbr: s.pinyinAbbr || '',
+        cmdType: 'text' as const
+      }
+
+      const result: Command[] = [baseShortcut]
+
+      // 机制A：设了别名后，原始文件名仍需可搜
+      if (s.alias && s.alias !== s.name) {
+        const originalPy = toPinyinFields(s.name)
+        result.push({
+          ...baseShortcut,
+          name: s.name,
+          pinyin: originalPy.pinyin,
+          pinyinAbbr: originalPy.pinyinAbbr
+        })
+      }
+
+      // 机制B：快捷键设置页配置的指令别名
+      result.push(...expandDirectLocalShortcutAliases(baseShortcut, commandAliases))
+
+      return result
+    })
+  }
+
   function rebuildCommandCollections(commandAliases: CommandAliasStore): void {
     const appItems = buildAppCommandItems(rawAppsCache.value, commandAliases)
     const { pluginItems, regexItems, mainPushItems } = buildPluginCommandItems(
@@ -1142,11 +1232,16 @@ export const useCommandDataStore = defineStore('commandData', () => {
       commandAliases
     )
 
+    const localShortcutItems = buildLocalShortcutCommandItems(
+      localShortcutCommandsCache.value,
+      commandAliases
+    )
+
     commands.value = [
       ...appItems,
       ...pluginItems,
       ...systemSettingCommandsCache.value,
-      ...localShortcutCommandsCache.value
+      ...localShortcutItems
     ]
     regexCommands.value = regexItems
     mainPushFeatures.value = mainPushItems
@@ -1154,7 +1249,7 @@ export const useCommandDataStore = defineStore('commandData', () => {
     rebuildFuseIndex()
 
     console.log(
-      `加载了 ${appItems.length} 个应用指令, ${pluginItems.length} 个插件指令, ${systemSettingCommandsCache.value.length} 个系统设置指令, ${localShortcutCommandsCache.value.length} 个本地启动项, ${regexItems.length} 个匹配指令`
+      `加载了 ${appItems.length} 个应用指令, ${pluginItems.length} 个插件指令, ${systemSettingCommandsCache.value.length} 个系统设置指令, ${localShortcutItems.length} 个本地启动项, ${regexItems.length} 个匹配指令`
     )
   }
 
@@ -1198,19 +1293,9 @@ export const useCommandDataStore = defineStore('commandData', () => {
         console.error('加载系统设置失败:', error)
       }
 
-      let localShortcuts: Command[] = []
+      let localShortcuts: any[] = []
       try {
-        const shortcuts = await window.ztools.localShortcuts.getAll()
-        localShortcuts = shortcuts.map((s: any) => ({
-          name: s.alias || s.name,
-          path: s.path,
-          icon: s.icon,
-          type: 'direct' as const,
-          subType: 'local-shortcut' as const,
-          pinyin: s.pinyin || '',
-          pinyinAbbr: s.pinyinAbbr || '',
-          cmdType: 'text' as const
-        }))
+        localShortcuts = await window.ztools.localShortcuts.getAll()
       } catch (error) {
         console.error('加载本地启动项失败:', error)
       }
@@ -1245,16 +1330,7 @@ export const useCommandDataStore = defineStore('commandData', () => {
   async function reloadLocalShortcuts(): Promise<void> {
     try {
       const shortcuts = await window.ztools.localShortcuts.getAll()
-      localShortcutCommandsCache.value = shortcuts.map((s: any) => ({
-        name: s.alias || s.name,
-        path: s.path,
-        icon: s.icon,
-        type: 'direct' as const,
-        subType: 'local-shortcut' as const,
-        pinyin: s.pinyin || '',
-        pinyinAbbr: s.pinyinAbbr || '',
-        cmdType: 'text' as const
-      }))
+      localShortcutCommandsCache.value = shortcuts
 
       rebuildCommandCollections(await loadCommandAliases())
 

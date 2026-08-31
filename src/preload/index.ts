@@ -1,4 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { SearchWallpaperConfig } from '@shared/searchWallpaper'
+import type { AiRequestStatusChange } from '@shared/aiRequestStatus'
 
 export interface Command {
   name: string
@@ -49,6 +51,7 @@ const api = {
     name?: string
     cmdType?: string
     confirmDialog?: any
+    launchSource?: 'search' | 'global-shortcut' | 'super-panel'
   }) => ipcRenderer.invoke('launch', options),
   launchAsAdmin: (appPath: string, name?: string) =>
     ipcRenderer.invoke('launch-as-admin', appPath, name),
@@ -238,8 +241,30 @@ const api = {
   onUpdateAvatar: (callback: (avatar: string) => void) => {
     ipcRenderer.on('update-avatar', (_event, avatar) => callback(avatar))
   },
-  onAiStatusChanged: (callback: (status: 'idle' | 'sending' | 'receiving') => void) => {
-    ipcRenderer.on('ai-status-changed', (_event, status) => callback(status))
+  /**
+   * 监听主搜索窗口壁纸的实时配置更新。
+   * @param callback 接收已规范化壁纸配置的回调函数
+   * @returns 用于移除监听器的清理函数
+   */
+  onUpdateSearchWallpaper: (
+    callback: (wallpaper: SearchWallpaperConfig | null) => void
+  ): (() => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      wallpaper: SearchWallpaperConfig | null
+    ): void => callback(wallpaper)
+    ipcRenderer.on('update-search-wallpaper', handler)
+    return (): void => {
+      ipcRenderer.removeListener('update-search-wallpaper', handler)
+    }
+  },
+  /**
+   * 监听带插件身份的 AI 请求状态变化。
+   * @param callback 接收插件级状态变化的回调
+   * @returns 无返回值
+   */
+  onAiStatusChanged: (callback: (change: AiRequestStatusChange) => void): void => {
+    ipcRenderer.on('ai-status-changed', (_event, change) => callback(change))
   },
   onUpdateAutoPaste: (callback: (autoPaste: string) => void) => {
     ipcRenderer.on('update-auto-paste', (_event, autoPaste) => callback(autoPaste))
@@ -292,6 +317,30 @@ const api = {
     callback: (data: { lightOpacity: number; darkOpacity: number }) => void
   ) => {
     ipcRenderer.on('update-acrylic-opacity', (_event, data) => callback(data))
+  },
+  /**
+   * 监听主窗口顶部栏密度的实时变化。
+   * @param callback 接收紧凑模式开关的回调函数。
+   * @returns 用于移除监听器的清理函数。
+   */
+  onUpdateCompactMainWindowHeader: (callback: (enabled: boolean) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, enabled: boolean): void => callback(enabled)
+    ipcRenderer.on('update-compact-main-window-header', handler)
+    return (): void => {
+      ipcRenderer.removeListener('update-compact-main-window-header', handler)
+    }
+  },
+  /**
+   * 监听插件内 ESC 直接隐藏设置的实时变化。
+   * @param callback 接收开关状态的回调函数。
+   * @returns 用于移除监听器的清理函数。
+   */
+  onUpdateHideMainWindowOnPluginEsc: (callback: (enabled: boolean) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, enabled: boolean): void => callback(enabled)
+    ipcRenderer.on('update-hide-main-window-on-plugin-esc', handler)
+    return (): void => {
+      ipcRenderer.removeListener('update-hide-main-window-on-plugin-esc', handler)
+    }
   },
   onIpcLaunch: (
     callback: (options: {
@@ -364,7 +413,14 @@ const api = {
   updater: {
     checkUpdate: () => ipcRenderer.invoke('updater:check-update'),
     showUpdateWindow: () => ipcRenderer.invoke('updater:show-update-window'),
-    startUpdate: () => ipcRenderer.invoke('updater:start-update'),
+    startUpdate: (sourceID?: number) => ipcRenderer.invoke('updater:start-update', sourceID),
+    /**
+     * 取消当前正在进行的应用更新下载。
+     * @returns 主进程确认下载已停止后的结果。
+     */
+    cancelUpdate: () => ipcRenderer.invoke('updater:cancel-update'),
+    openDownloadSource: (sourceID: number) =>
+      ipcRenderer.invoke('updater:open-download-source', sourceID),
     installDownloadedUpdate: () => ipcRenderer.invoke('updater:install-downloaded-update'),
     getDownloadStatus: () => ipcRenderer.invoke('updater:get-download-status')
   },
@@ -541,9 +597,12 @@ declare global {
         name?: string
         cmdType?: string
         confirmDialog?: any
+        launchSource?: 'search' | 'global-shortcut' | 'super-panel'
       }) => Promise<void>
       hideWindow: () => void
       resizeWindow: (height: number) => void
+      onUpdateCompactMainWindowHeader: (callback: (enabled: boolean) => void) => () => void
+      onUpdateHideMainWindowOnPluginEsc: (callback: (enabled: boolean) => void) => () => void
       updateLaunchContext: (context: {
         searchQuery: string
         pastedImage: string | null

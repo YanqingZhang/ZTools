@@ -1,5 +1,6 @@
 import path from 'path'
 import { app } from 'electron'
+import { CancellationToken } from 'builder-util-runtime'
 import log from 'electron-log'
 import { NsisUpdater, autoUpdater, type UpdateInfo } from 'electron-updater'
 import type {
@@ -53,6 +54,7 @@ export class ElectronUpdaterService {
   private updateInfo: PlatformUpdateInfo | null = null
   private checkPromise: Promise<PlatformUpdateResult> | null = null
   private downloadPromise: Promise<PlatformUpdateActionResult> | null = null
+  private downloadCancellationToken: CancellationToken | null = null
   private showWindowAfterDownload = true
 
   /**
@@ -183,26 +185,74 @@ export class ElectronUpdaterService {
     this.showWindowAfterDownload = showWindowAfterDownload
     this.state = 'downloading'
     this.callbacks.onDownloadStart({ version: this.updateInfo.version })
+    const cancellationToken = new CancellationToken()
+    this.downloadCancellationToken = cancellationToken
     this.downloadPromise = autoUpdater
-      .downloadUpdate()
-      .then(() => ({ success: true }))
+      .downloadUpdate(cancellationToken)
+      .then(() => {
+        // 即使底层已进入无法中断的收尾阶段，也必须遵守先收到的取消请求。
+        if (cancellationToken.cancelled) {
+          this.state = 'available'
+          this.callbacks.onDownloadCancelled()
+          return { success: false, cancelled: true }
+        }
+        return { success: true }
+      })
       .catch((error: unknown) => {
+        // 用户取消属于可恢复状态，不应展示为下载失败或继续进入安装。
+        if (cancellationToken.cancelled) {
+          this.state = 'available'
+          this.callbacks.onDownloadCancelled()
+          return { success: false, cancelled: true }
+        }
         const message = error instanceof Error ? error.message : '下载更新失败'
         this.state = 'error'
         this.callbacks.onDownloadFailed(message)
         return { success: false, error: message }
       })
       .finally(() => {
+        // 只清理由本轮下载创建的令牌，避免覆盖后续重试。
+        if (this.downloadCancellationToken === cancellationToken) {
+          this.downloadCancellationToken = null
+        }
+        cancellationToken.dispose()
         this.downloadPromise = null
       })
     return this.downloadPromise
   }
 
   /**
-   * 下载当前更新并在下载完成后启动平台安装流程。
+   * 取消当前正在进行的更新下载，并保留可用更新供用户稍后重试。
+   * @returns 下载请求完全结束后的取消结果。
+   */
+  public async cancelUpdate(): Promise<PlatformUpdateActionResult> {
+    if (this.state !== 'downloading' || !this.downloadCancellationToken) {
+      return { success: false, error: '当前没有正在下载的更新' }
+    }
+
+    // 等待本轮 Promise 完成清理，避免立即重试时复用已取消的下载。
+    const activeDownload = this.downloadPromise
+    this.downloadCancellationToken.cancel()
+    await activeDownload
+    return { success: true, cancelled: true }
+  }
+
+  /**
+   * 根据可选服务端 feed 下载当前更新，并在完成后启动平台安装流程。
+   * @param updateInfo 心跳发现的目标版本及服务端 feed 地址。
    * @returns 下载和安装启动结果。
    */
-  public async downloadAndInstall(): Promise<PlatformUpdateActionResult> {
+  public async downloadAndInstall(
+    updateInfo?: PlatformUpdateInfo
+  ): Promise<PlatformUpdateActionResult> {
+    if (updateInfo?.feedUrl) {
+      // 服务端 feed 只提供元数据，实际安装包仍由 GitHub Release 下载。
+      autoUpdater.setFeedURL({ provider: 'generic', url: updateInfo.feedUrl })
+      const checkResult = await this.checkForUpdates(false)
+      if (!checkResult.hasUpdate || checkResult.latestVersion !== updateInfo.version) {
+        return { success: false, error: '更新元数据与当前版本不一致' }
+      }
+    }
     const downloadResult = await this.downloadUpdate(false)
     if (!downloadResult.success) return downloadResult
     return this.installDownloadedUpdate()

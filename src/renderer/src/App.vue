@@ -1,5 +1,16 @@
 <template>
-  <div class="app-container" :class="{ 'app-container__plugin': currentView === ViewMode.Plugin }">
+  <div
+    class="app-container"
+    :class="{
+      'app-container__plugin': currentView === ViewMode.Plugin,
+      'has-search-wallpaper': hasSearchWallpaper
+    }"
+  >
+    <div
+      v-if="hasSearchWallpaper"
+      class="search-wallpaper-layer"
+      :style="searchWallpaperStyle"
+    ></div>
     <div class="search-window">
       <div :class="['search-box-wrapper', { 'with-divider': currentView === ViewMode.Plugin }]">
         <SearchBox
@@ -38,12 +49,16 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import SearchBox from './components/search/SearchBox.vue'
 import SearchResults from './components/search/SearchResults.vue'
 import { useCommandDataStore } from './stores/commandDataStore'
 import { useWindowStore } from './stores/windowStore'
-import { CommonKeyboardModifier, readModifiers } from '@renderer/utils/convertKeyboardEvent'
+import {
+  NavDirectionKey,
+  convertToElectronKeyboardEvent,
+  readModifiers
+} from '@renderer/utils/convertKeyboardEvent'
 
 // FileItem 接口（从剪贴板管理器返回的格式）
 interface FileItem {
@@ -70,12 +85,32 @@ const searchResultsRef = ref<{
   resetCollapseState: () => void
 } | null>(null)
 let removeAutoCheckUpdateChangedListener: (() => void) | null = null
+let removeSearchWallpaperListener: (() => void) | null = null
+let removeCompactMainWindowHeaderListener: (() => void) | null = null
+let removeHideMainWindowOnPluginEscListener: (() => void) | null = null
 // 粘贴的图片数据
 const pastedImageData = ref<string | null>(null)
 // 粘贴的文件数据
 const pastedFilesData = ref<FileItem[] | null>(null)
 // 粘贴的文本数据
 const pastedTextData = ref<string | null>(null)
+
+const hasSearchWallpaper = computed(
+  () => currentView.value === ViewMode.Search && windowStore.searchWallpaper !== null
+)
+const searchWallpaperStyle = computed(() => {
+  const wallpaper = windowStore.searchWallpaper
+  if (!wallpaper) return {}
+
+  // 扩大图片层覆盖范围，避免 filter blur 在窗口边缘产生透明缝隙。
+  const blurOverflow = Math.ceil(wallpaper.blur * 2)
+  return {
+    backgroundImage: `url("${wallpaper.url}")`,
+    opacity: wallpaper.opacity,
+    filter: `blur(${wallpaper.blur}px)`,
+    inset: `-${blurOverflow}px`
+  }
+})
 
 // 将当前搜索输入和粘贴态同步到主进程，供应用快捷键启动时复用
 function syncLaunchContext(): void {
@@ -193,7 +228,8 @@ function focusSearchAfterPluginExit(): void {
 }
 
 /**
- * 处理插件模式下的分步退出逻辑：清空输入 -> 清理粘贴态 -> 退出插件
+ * 处理插件模式下的分步退出逻辑：清空输入 -> 清理粘贴态 -> 退出插件或隐藏窗口。
+ * @returns 无返回值。
  */
 function handlePluginStepExit(): void {
   if (searchQuery.value.trim()) {
@@ -211,66 +247,49 @@ function handlePluginStepExit(): void {
     return
   }
 
-  // 第三步：退出插件返回搜索
+  if (windowStore.hideMainWindowOnPluginEsc) {
+    // 仅替换原流程的最终退出动作，确保顶部输入和粘贴态仍按顺序清理。
+    console.log('[PluginExit] 分步退出完成，直接隐藏主窗口')
+    window.ztools.hideWindow()
+    return
+  }
+
+  // 第三步：按原有行为退出插件返回搜索。
   exitPluginToSearch()
 }
 
-// 将浏览器 KeyboardEvent 转换为 Electron KeyboardInputEvent 格式
-function convertToElectronKeyboardEvent(
-  direction: 'left' | 'right' | 'up' | 'down' | 'enter',
-  type: 'keyDown' | 'keyUp' = 'keyDown',
-  modifiers: CommonKeyboardModifier[] = []
-): {
-  type: 'keyDown' | 'keyUp'
-  keyCode: string
-  modifiers: CommonKeyboardModifier[]
-} {
-  // 映射方向键和回车键的 keyCode
-  const keyCodeMap: Record<string, string> = {
-    left: 'Left',
-    right: 'Right',
-    up: 'Up',
-    down: 'Down',
-    enter: 'Return'
-  }
-
-  return {
-    type,
-    keyCode: keyCodeMap[direction],
-    modifiers
-  }
-}
-
-// 处理方向键事件
-async function handleArrowKeydown(
-  event: KeyboardEvent,
-  direction: 'left' | 'right' | 'up' | 'down' | 'enter'
-): Promise<void> {
-  // 只在插件模式下转发方向键事件
+/**
+ * 处理搜索框转发的导航按键事件（方向键、回车键、Tab 键）。
+ * @param event 原生键盘事件。
+ * @param direction 按键动作名称。
+ * @returns 操作完成后的 Promise。
+ */
+async function handleArrowKeydown(event: KeyboardEvent, direction: NavDirectionKey): Promise<void> {
+  // 仅在插件模式且存在活动插件时转发按键事件
   if (currentView.value !== ViewMode.Plugin || !windowStore.currentPlugin) {
     return
   }
 
-  // 只有上下方向键阻止默认行为，左右方向键允许在搜索框中移动光标
-  if (direction === 'up' || direction === 'down') {
+  // 阻止上下方向键与 Tab 键的默认行为（避免光标跳动或触发表头 DOM 焦点切换），左右方向键放行以允许移动光标
+  if (direction === 'up' || direction === 'down' || direction === 'tab') {
     event.preventDefault()
     event.stopPropagation()
   }
 
+  // 读取当前按下的修饰键状态（Shift/Ctrl/Alt/Meta）
   const modifiers = readModifiers(event)
 
-  // 转换为 Electron 格式
+  // 转换为 Electron 输入事件数据
   const keyDownEvent = convertToElectronKeyboardEvent(direction, 'keyDown', modifiers)
   const keyUpEvent = convertToElectronKeyboardEvent(direction, 'keyUp', modifiers)
 
-  // 发送给主进程：先发送 keyDown，再发送 keyUp
+  // 依次向主进程发送 keyDown 与延迟的 keyUp 事件，模拟真实的按键时序
   try {
     await window.ztools.sendInputEvent(keyDownEvent)
-    // 短暂延迟后发送 keyUp，模拟真实的按键行为
     await new Promise((resolve) => setTimeout(resolve, 10))
     await window.ztools.sendInputEvent(keyUpEvent)
   } catch (error) {
-    console.error('发送方向键事件失败:', error)
+    console.error('发送按键事件失败:', error)
   }
 }
 
@@ -380,7 +399,11 @@ watch(currentView, (newView) => {
   updateWindowHeight()
 })
 
-//键盘操作
+/**
+ * 全局键盘事件监听处理函数，分发快捷键、Tab导航、分步退出及搜索结果导航。
+ * @param event 键盘事件对象。
+ * @returns 操作完成后的 Promise。
+ */
 async function handleKeydown(event: KeyboardEvent): Promise<void> {
   // 如果正在输入法组合中,忽略所有键盘事件
   if (isComposing.value) {
@@ -424,7 +447,7 @@ async function handleKeydown(event: KeyboardEvent): Promise<void> {
     return
   }
 
-  // Tab 键：根据设置执行目标指令或切换选中项
+  // Tab 键：搜索模式下执行目标指令或切换选中项，插件模式下拦截默认行为并转发给插件
   if (event.key === 'Tab') {
     if (currentView.value === ViewMode.Search) {
       if (windowStore.tabKeyFunction === 'target-command') {
@@ -438,6 +461,22 @@ async function handleKeydown(event: KeyboardEvent): Promise<void> {
         searchResultsRef.value?.handleKeydown(event)
         return
       }
+    } else if (currentView.value === ViewMode.Plugin && windowStore.currentPlugin) {
+      // 插件模式下若未被输入框拦截（如焦点位于窗口其他区域），同样拦截并转发 Tab，避免在宿主 DOM 间跳转
+      if (!event.defaultPrevented) {
+        event.preventDefault()
+        const modifiers = readModifiers(event)
+        const keyDownEvent = convertToElectronKeyboardEvent('tab', 'keyDown', modifiers)
+        const keyUpEvent = convertToElectronKeyboardEvent('tab', 'keyUp', modifiers)
+        try {
+          await window.ztools.sendInputEvent(keyDownEvent)
+          await new Promise((resolve) => setTimeout(resolve, 10))
+          await window.ztools.sendInputEvent(keyUpEvent)
+        } catch (error) {
+          console.error('发送 Tab 键事件失败:', error)
+        }
+      }
+      return
     }
   }
 
@@ -709,6 +748,25 @@ onMounted(async () => {
     console.log('更新头像:', avatar)
     windowStore.updateAvatar(avatar)
   })
+
+  // 壁纸设置只更新宿主搜索视图，不传递到当前插件页面。
+  removeSearchWallpaperListener = window.ztools.onUpdateSearchWallpaper((wallpaper) => {
+    void windowStore.updateSearchWallpaper(wallpaper)
+  })
+
+  removeCompactMainWindowHeaderListener = window.ztools.onUpdateCompactMainWindowHeader(
+    (enabled) => {
+      windowStore.updateCompactMainWindowHeader(enabled)
+      if (currentView.value === ViewMode.Search) {
+        updateWindowHeight()
+      }
+    }
+  )
+  removeHideMainWindowOnPluginEscListener = window.ztools.onUpdateHideMainWindowOnPluginEsc(
+    (enabled) => {
+      windowStore.updateHideMainWindowOnPluginEsc(enabled)
+    }
+  )
 
   // 监听自动粘贴配置更新事件
   window.ztools.onUpdateAutoPaste((autoPaste: string) => {
@@ -997,7 +1055,12 @@ onMounted(async () => {
 
   // 监听超级面板启动事件（由主进程从超级面板转发）
   window.ztools.onSuperPanelLaunch(
-    async (data: { command: any; clipboardContent?: any; windowInfo?: any }) => {
+    async (data: {
+      command: any
+      launchSource?: 'search' | 'global-shortcut' | 'super-panel'
+      clipboardContent?: any
+      windowInfo?: any
+    }) => {
       console.log(
         '[超级面板启动] 收到启动事件:',
         data.command?.name,
@@ -1042,6 +1105,7 @@ onMounted(async () => {
           featureCode: cmd.featureCode,
           name: cmd.name,
           cmdType: cmd.cmdType || type,
+          launchSource: data.launchSource || 'super-panel',
           param: {
             payload,
             type,
@@ -1076,6 +1140,12 @@ onUnmounted(() => {
   // 释放支持主动清理的 IPC 监听器，避免重复挂载后收到多次通知。
   removeAutoCheckUpdateChangedListener?.()
   removeAutoCheckUpdateChangedListener = null
+  removeSearchWallpaperListener?.()
+  removeSearchWallpaperListener = null
+  removeCompactMainWindowHeaderListener?.()
+  removeCompactMainWindowHeaderListener = null
+  removeHideMainWindowOnPluginEscListener?.()
+  removeHideMainWindowOnPluginEscListener = null
   window.removeEventListener('keydown', handleKeydown)
 })
 </script>
@@ -1097,8 +1167,25 @@ onUnmounted(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
+  position: relative;
+  z-index: 1;
   /* overflow: hidden; 隐藏所有滚动条 */
   /* border-radius: 8px; Windows 11 圆角 */
+}
+
+.search-wallpaper-layer {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  user-select: none;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  transform: translateZ(0);
+  transition:
+    opacity 0.2s ease,
+    filter 0.2s ease;
+  will-change: opacity, filter;
 }
 
 .search-box-wrapper {

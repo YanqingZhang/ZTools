@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useToast } from '@/components'
-import type { PluginUninstallOptions } from '@/components'
+import type { PluginUninstallOptions, TabId } from '@/components'
 import { compareVersions, upgradeInstalledPluginFromMarket, weightedSearch } from '@/utils'
 import { PluginDetail, PluginCard, CategoryCard, CategoryDetail, RefreshButton } from './components'
 import type { Plugin, CategoryInfo, CategoryLayoutSection, PluginDownloadState } from './components'
@@ -23,7 +23,7 @@ interface CategorySummary {
   description?: string
   icon?: string
   showDescription: boolean
-  pluginCount: number
+  pluginCount?: number
 }
 
 interface StorefrontSection {
@@ -96,6 +96,10 @@ const hasStorefront = computed(() => storefrontSections.value.length > 0)
 const isDetailVisible = ref(false)
 const selectedPlugin = ref<Plugin | null>(null)
 const pendingDetailPluginName = ref<string | null>(null)
+const pendingDetailTab = ref<TabId | undefined>()
+const pendingCommentId = ref<number | null>(null)
+const activeDetailTab = ref<TabId | undefined>()
+const activeCommentId = ref<number | null>(null)
 
 // 分类详情面板状态
 const isCategoryDetailVisible = ref(false)
@@ -106,6 +110,10 @@ const showScrollableContent = computed(
   () => !isDetailVisible.value && !isCategoryDetailVisible.value
 )
 
+/**
+ * 在插件列表就绪后打开通知或跳转请求指定的插件详情。
+ * @returns 无返回值。
+ */
 function openPendingPluginDetail(): void {
   const pluginName = pendingDetailPluginName.value
   if (!pluginName) return
@@ -114,7 +122,11 @@ function openPendingPluginDetail(): void {
   if (!plugin) return
 
   pendingDetailPluginName.value = null
-  openPluginDetail(plugin)
+  activeDetailTab.value = pendingDetailTab.value
+  activeCommentId.value = pendingCommentId.value
+  pendingDetailTab.value = undefined
+  pendingCommentId.value = null
+  openPluginDetail(plugin, true)
 }
 
 // 将市场插件数据标记已安装状态
@@ -238,7 +250,17 @@ async function fetchPlugins(): Promise<void> {
   }
 }
 
-function openPluginDetail(plugin: Plugin): void {
+/**
+ * 打开插件详情，并按调用来源决定是否保留通知定位目标。
+ * @param plugin 要打开的插件。
+ * @param preserveNotificationTarget 是否保留留言标签和评论定位参数。
+ * @returns 无返回值。
+ */
+function openPluginDetail(plugin: Plugin, preserveNotificationTarget = false): void {
+  if (!preserveNotificationTarget) {
+    activeDetailTab.value = undefined
+    activeCommentId.value = null
+  }
   selectedPlugin.value = plugin
   isDetailVisible.value = true
 }
@@ -547,6 +569,8 @@ useJumpFunction<PluginMarketSettingJumpFunction>((state) => {
     setSubInput(state.payload)
   } else if (state.payload && state.type === 'detail') {
     pendingDetailPluginName.value = state.payload
+    pendingDetailTab.value = state.tab
+    pendingCommentId.value = state.commentId || null
     openPendingPluginDetail()
   }
 })
@@ -767,6 +791,8 @@ onUnmounted(() => {
         :plugin="selectedPlugin"
         :is-loading="installingPlugin === selectedPlugin.name"
         :download-state="downloadStates[selectedPlugin.name]"
+        :initial-tab="activeDetailTab"
+        :target-comment-id="activeCommentId"
         @back="closePluginDetail"
         @open="handleOpenPlugin(selectedPlugin)"
         @open-folder="handleOpenFolder(selectedPlugin)"

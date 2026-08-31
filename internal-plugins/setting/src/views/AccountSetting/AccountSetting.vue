@@ -1,28 +1,30 @@
 <script setup lang="ts">
 import defaultAvatar from '@/assets/image/default.png'
-import { useToast } from '@/components'
-import { ONLINE_SYNC_SERVER_URL, notifyAccountChanged } from '@/composables/useZToolsAccount'
+import { BaseDialog, useToast } from '@/components'
+import { useAccountProfile } from '@/composables'
+import { notifyAccountChanged } from '@/composables/useZToolsAccount'
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-interface AccountProfileCache {
-  uid: string
-  nickname?: string
-  avatarUrl?: string
-  updatedAt: number
-}
-
 const router = useRouter()
-const { success, error, warning } = useToast()
+const { success, error, warning, confirm } = useToast()
+const {
+  state: accountProfile,
+  refresh: refreshAccountProfile,
+  update: updateAccountProfile,
+  clear: clearAccountProfile
+} = useAccountProfile()
 
-const username = ref('')
-const nickname = ref('')
-const avatar = ref(defaultAvatar)
-const loadingProfile = ref(true)
 const loadingStats = ref(false)
 const editingNickname = ref(false)
 const nicknameInput = ref('')
 const updatingNickname = ref(false)
+const deletingAccount = ref(false)
+const changingPassword = ref(false)
+const showPasswordDialog = ref(false)
+const currentPassword = ref('')
+const newPassword = ref('')
+const confirmPassword = ref('')
 const stats = ref<{
   documentCount: number
   attachmentCount: number
@@ -30,129 +32,32 @@ const stats = ref<{
   monthlyTraffic: number
 } | null>(null)
 
-const displayName = computed(() => nickname.value || username.value || 'ZTools 用户')
+const username = computed(() => accountProfile.uid)
+const nickname = computed(() => accountProfile.nickname)
+const avatar = computed(() => accountProfile.avatarUrl || defaultAvatar)
+const loadingProfile = computed(() => accountProfile.loading)
+const displayName = computed(() => accountProfile.nickname || accountProfile.uid || 'ZTools 用户')
 
 onMounted(() => {
   void loadAccount()
 })
 
 /**
- * 生成指定账号的本地资料缓存键。
- * @param uid 账号唯一标识
- * @returns 本地数据库缓存键
- */
-function profileCacheKey(uid: string): string {
-  return `account-profile-cache:${uid}`
-}
-
-/**
- * 读取指定账号的本地资料缓存。
- * @param uid 账号唯一标识
- * @returns 账号资料缓存；不存在或读取失败时返回 null
- */
-async function readCachedProfile(uid: string): Promise<AccountProfileCache | null> {
-  if (!uid) return null
-
-  try {
-    const cached = await window.ztools.internal.dbGet(profileCacheKey(uid))
-    if (!cached || typeof cached !== 'object') return null
-
-    return {
-      uid: typeof cached.uid === 'string' ? cached.uid : uid,
-      nickname: typeof cached.nickname === 'string' ? cached.nickname : '',
-      avatarUrl: typeof cached.avatarUrl === 'string' ? cached.avatarUrl : '',
-      updatedAt: Number(cached.updatedAt || 0)
-    }
-  } catch {
-    return null
-  }
-}
-
-/**
- * 持久化账号资料缓存，供侧边栏和个人中心快速展示。
- * @param profile 要写入的账号资料
- * @returns 缓存写入完成后结束的 Promise
- */
-async function writeCachedProfile(profile: AccountProfileCache): Promise<void> {
-  if (!profile.uid) return
-
-  try {
-    await window.ztools.internal.dbPut(profileCacheKey(profile.uid), {
-      uid: profile.uid,
-      nickname: profile.nickname || '',
-      avatarUrl: profile.avatarUrl || '',
-      updatedAt: profile.updatedAt || Date.now()
-    })
-  } catch {
-    // 本地缓存失败不阻断资料更新和账号操作。
-  }
-}
-
-/**
- * 将账号资料应用到当前页面状态。
- * @param profile 要展示的账号资料
- * @param fallbackUid 资料缺少账号标识时使用的兜底值
- * @returns 无返回值
- */
-function applyProfile(profile: AccountProfileCache | null, fallbackUid: string): void {
-  username.value = profile?.uid || fallbackUid
-  nickname.value = profile?.nickname || ''
-  avatar.value = profile?.avatarUrl || defaultAvatar
-}
-
-/**
  * 校验登录状态并加载个人中心所需资料。
  * @returns 资料加载完成后结束的 Promise
  */
 async function loadAccount(): Promise<void> {
-  loadingProfile.value = true
-
   try {
-    // 个人中心只允许当前 ZTools 云同步账号访问。
-    const result = await window.ztools.internal.syncGetConfig()
-    const config = result.success ? result.config : null
-    const uid = config?.username || ''
-    const isLoggedIn = Boolean(config?.token && config.serverUrl === ONLINE_SYNC_SERVER_URL && uid)
-    if (!isLoggedIn) {
+    // 个人中心进入时强制读取服务端，确保跨设备修改立即覆盖本机缓存。
+    await refreshAccountProfile({ force: true })
+    if (!accountProfile.loggedIn) {
       await router.replace({ name: 'GeneralSetting' })
       return
     }
-
-    // 先使用本地缓存完成首屏，再并行刷新远端资料和统计数据。
-    const cachedProfile = await readCachedProfile(uid)
-    applyProfile(cachedProfile, uid)
-    await Promise.allSettled([refreshProfile(uid), loadCloudStats()])
+    await loadCloudStats()
   } catch (err: unknown) {
     console.error('加载个人中心失败:', err)
     error('加载个人中心失败')
-  } finally {
-    loadingProfile.value = false
-  }
-}
-
-/**
- * 从服务端刷新账号资料并更新本地缓存。
- * @param expectedUid 当前页面预期加载的账号标识
- * @returns 资料刷新完成后结束的 Promise
- */
-async function refreshProfile(expectedUid: string): Promise<void> {
-  try {
-    const result = await window.ztools.internal.syncGetAccountProfile()
-    if (!result.success || !result.profile) return
-
-    const profile = {
-      uid: result.profile.uid || expectedUid,
-      nickname: result.profile.nickname || '',
-      avatarUrl: result.profile.avatarUrl || '',
-      updatedAt: Date.now()
-    }
-    if (profile.uid !== expectedUid) return
-
-    // 仅应用当前账号的返回结果，避免账号切换期间写入错位资料。
-    applyProfile(profile, expectedUid)
-    await writeCachedProfile(profile)
-  } catch {
-    // 远端刷新失败时继续使用本地缓存，个人中心仍保持可用。
   }
 }
 
@@ -199,16 +104,16 @@ async function changeAvatar(): Promise<void> {
     return
   }
 
-  // 上传成功后同步当前页面、本地缓存和侧边栏账号信息。
-  const profile = {
-    uid: uploaded.profile.uid || username.value,
-    nickname: uploaded.profile.nickname || nickname.value,
-    avatarUrl: uploaded.profile.avatarUrl || '',
-    updatedAt: Date.now()
-  }
-  applyProfile(profile, username.value)
-  await writeCachedProfile(profile)
-  notifyAccountChanged()
+  // 上传成功后写入共享状态，侧边栏与个人中心在同一轮渲染中更新。
+  await updateAccountProfile(
+    {
+      uid: uploaded.profile.uid || username.value,
+      nickname: uploaded.profile.nickname || nickname.value,
+      avatarUrl: uploaded.profile.avatarUrl || '',
+      updatedAt: Date.now()
+    },
+    username.value
+  )
   success('账号头像已更新')
 }
 
@@ -218,22 +123,116 @@ async function changeAvatar(): Promise<void> {
  */
 async function logout(): Promise<void> {
   try {
-    // 先停止同步任务，再清空持久化登录凭据。
-    await window.ztools.internal.syncStopAutoSync()
-    await window.ztools.internal.syncSaveConfig({
-      enabled: false,
-      serverUrl: ONLINE_SYNC_SERVER_URL,
-      token: '',
-      refreshToken: '',
-      syncInterval: 30,
-      username: ''
-    })
+    const result = await window.ztools.internal.accountLogout()
+    if (!result.success) throw new Error(result.error || '退出登录失败')
 
+    clearAccountProfile()
     notifyAccountChanged()
     success('已退出登录')
     await router.replace({ name: 'GeneralSetting' })
   } catch (err: unknown) {
     error(err instanceof Error ? err.message : '退出登录失败')
+  }
+}
+
+/**
+ * 确认后永久删除当前服务端账号，并在成功后退出 ZTools 登录。
+ * @returns 删除账号流程完成后结束的 Promise
+ */
+async function deleteAccount(): Promise<void> {
+  const confirmed = await confirm({
+    title: '删除账号',
+    message: `确定永久删除账号“${username.value}”吗？\n\n云同步数据、评论及其他账号相关数据将被删除，且无法恢复。`,
+    type: 'danger',
+    confirmText: '永久删除'
+  })
+  if (!confirmed) return
+
+  try {
+    deletingAccount.value = true
+    const result = await window.ztools.internal.accountDelete()
+    if (!result.success) throw new Error(result.error || '删除账号失败')
+
+    // 主进程已完成服务端删除与本地会话清理，立即清空共享资料状态。
+    clearAccountProfile()
+    notifyAccountChanged()
+    success('账号已删除')
+    await router.replace({ name: 'GeneralSetting' })
+  } catch (err: unknown) {
+    error(err instanceof Error ? err.message : '删除账号失败')
+  } finally {
+    deletingAccount.value = false
+  }
+}
+
+/**
+ * 打开修改密码弹窗并清空上一次输入，避免密码残留在界面状态中。
+ * @returns 无返回值
+ */
+function openPasswordDialog(): void {
+  currentPassword.value = ''
+  newPassword.value = ''
+  confirmPassword.value = ''
+  showPasswordDialog.value = true
+}
+
+/**
+ * 关闭修改密码弹窗并清理敏感输入。
+ * @returns 无返回值
+ */
+function closePasswordDialog(): void {
+  if (changingPassword.value) return
+  showPasswordDialog.value = false
+  currentPassword.value = ''
+  newPassword.value = ''
+  confirmPassword.value = ''
+}
+
+/**
+ * 校验并提交新密码，成功后退出当前登录但保留本地账号数据。
+ * @returns 修改密码流程完成后结束的 Promise
+ */
+async function changePassword(): Promise<void> {
+  const current = currentPassword.value
+  const next = newPassword.value
+  if (!current || !next || !confirmPassword.value) {
+    warning('请完整填写密码')
+    return
+  }
+  const passwordBytes = new TextEncoder().encode(next).length
+  if (passwordBytes < 6 || passwordBytes > 72) {
+    warning('新密码长度应为 6-72 字节')
+    return
+  }
+  if (next !== confirmPassword.value) {
+    warning('两次输入的新密码不一致')
+    return
+  }
+  if (current === next) {
+    warning('新密码不能与当前密码相同')
+    return
+  }
+
+  try {
+    changingPassword.value = true
+    // 主进程负责请求服务端、撤销 token，并切回默认登录数据空间。
+    const result = await window.ztools.internal.accountChangePassword({
+      currentPassword: current,
+      newPassword: next
+    })
+    if (!result.success) throw new Error(result.error || '修改密码失败')
+    showPasswordDialog.value = false
+    currentPassword.value = ''
+    newPassword.value = ''
+    confirmPassword.value = ''
+    clearAccountProfile()
+    notifyAccountChanged()
+    success('密码已修改，请使用新密码重新登录')
+    await router.replace({ name: 'GeneralSetting' })
+  } catch (err: unknown) {
+    error(err instanceof Error ? err.message : '修改密码失败')
+  } finally {
+    changingPassword.value = false
   }
 }
 
@@ -274,16 +273,13 @@ async function saveNickname(): Promise<void> {
   try {
     updatingNickname.value = true
 
-    // 提交前重新读取令牌，避免使用已过期或已退出的账号状态。
-    const config = await window.ztools.internal.syncGetConfig()
-    if (!config.success || !config.config?.token) {
+    const account = await window.ztools.internal.accountGetSession()
+    if (!account.success || !account.session?.token) {
       error('未登录，无法修改昵称')
       return
     }
 
     const result = await window.ztools.internal.syncUpdateNickname({
-      serverUrl: config.config.serverUrl,
-      token: config.config.token,
       nickname: newNickname
     })
     if (!result.success || !result.profile) {
@@ -291,17 +287,17 @@ async function saveNickname(): Promise<void> {
       return
     }
 
-    // 保存服务端最终资料，并通知侧边栏更新展示名称。
-    const profile = {
-      uid: result.profile.uid || username.value,
-      nickname: result.profile.nickname || newNickname,
-      avatarUrl: result.profile.avatarUrl || avatar.value,
-      updatedAt: Date.now()
-    }
-    applyProfile(profile, username.value)
-    await writeCachedProfile(profile)
+    // 保存服务端最终资料，共享状态会直接驱动侧边栏更新展示名称。
+    await updateAccountProfile(
+      {
+        uid: result.profile.uid || username.value,
+        nickname: result.profile.nickname || newNickname,
+        avatarUrl: result.profile.avatarUrl || accountProfile.avatarUrl,
+        updatedAt: Date.now()
+      },
+      username.value
+    )
     editingNickname.value = false
-    notifyAccountChanged()
     success('昵称已更新')
   } catch (err: unknown) {
     error(err instanceof Error ? err.message : '更新昵称失败')
@@ -379,6 +375,23 @@ function formatBytes(value?: number): string {
         </div>
       </section>
 
+      <section class="security-section" aria-label="账号安全">
+        <div class="security-row">
+          <div>
+            <span class="info-label">密码</span>
+            <span class="security-hint">定期修改密码可保护账号安全</span>
+          </div>
+          <button
+            type="button"
+            class="btn-link"
+            data-testid="change-password"
+            @click="openPasswordDialog"
+          >
+            修改密码
+          </button>
+        </div>
+      </section>
+
       <section class="usage-section">
         <h2>云同步用量</h2>
         <div class="stats-grid">
@@ -402,10 +415,82 @@ function formatBytes(value?: number): string {
       </section>
 
       <footer class="profile-actions">
-        <button type="button" class="btn-danger" @click="logout">退出登录</button>
+        <button
+          type="button"
+          class="btn-action btn-secondary"
+          :disabled="deletingAccount"
+          @click="logout"
+        >
+          退出登录
+        </button>
+        <button
+          type="button"
+          class="btn-danger"
+          data-testid="delete-account"
+          :disabled="deletingAccount"
+          @click="deleteAccount"
+        >
+          {{ deletingAccount ? '删除中...' : '删除账号' }}
+        </button>
       </footer>
     </div>
   </div>
+
+  <BaseDialog
+    v-model:visible="showPasswordDialog"
+    title="修改密码"
+    subtitle="修改成功后，所有设备都会退出登录。"
+    :close-on-overlay="!changingPassword"
+    @close="closePasswordDialog"
+  >
+    <form class="password-form" @submit.prevent="changePassword">
+      <label class="password-field">
+        <span>当前密码</span>
+        <input
+          v-model="currentPassword"
+          data-testid="current-password"
+          type="password"
+          autocomplete="current-password"
+        />
+      </label>
+      <label class="password-field">
+        <span>新密码</span>
+        <input
+          v-model="newPassword"
+          data-testid="new-password"
+          type="password"
+          autocomplete="new-password"
+        />
+      </label>
+      <label class="password-field">
+        <span>确认新密码</span>
+        <input
+          v-model="confirmPassword"
+          data-testid="confirm-password"
+          type="password"
+          autocomplete="new-password"
+        />
+      </label>
+      <div class="password-actions">
+        <button
+          type="button"
+          class="btn-secondary btn-action"
+          :disabled="changingPassword"
+          @click="closePasswordDialog"
+        >
+          取消
+        </button>
+        <button
+          type="submit"
+          class="btn-primary btn-action"
+          data-testid="submit-password-change"
+          :disabled="changingPassword"
+        >
+          {{ changingPassword ? '提交中...' : '确认修改' }}
+        </button>
+      </div>
+    </form>
+  </BaseDialog>
 </template>
 
 <style scoped>
@@ -534,6 +619,7 @@ function formatBytes(value?: number): string {
 }
 
 .btn-sm,
+.btn-action,
 .btn-danger {
   border: 0;
   border-radius: 6px;
@@ -543,6 +629,11 @@ function formatBytes(value?: number): string {
 
 .btn-sm {
   padding: 7px 12px;
+  font-size: 13px;
+}
+
+.btn-action {
+  padding: 9px 16px;
   font-size: 13px;
 }
 
@@ -556,13 +647,73 @@ function formatBytes(value?: number): string {
   color: var(--text-color);
 }
 
-.btn-sm:disabled {
+.btn-sm:disabled,
+.btn-action:disabled,
+.btn-danger:disabled {
   cursor: not-allowed;
   opacity: 0.6;
 }
 
 .usage-section {
   padding: 28px 0;
+}
+
+.security-section {
+  border-top: 1px solid var(--divider-color);
+}
+
+.security-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 66px;
+  border-bottom: 1px solid var(--divider-color);
+}
+
+.security-row > div {
+  display: grid;
+  gap: 5px;
+}
+
+.security-hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.password-form {
+  display: grid;
+  gap: 16px;
+}
+
+.password-field {
+  display: grid;
+  gap: 7px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.password-field input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--divider-color);
+  border-radius: 6px;
+  outline: none;
+  padding: 9px 10px;
+  background: var(--control-bg);
+  color: var(--text-color);
+  font-size: 14px;
+}
+
+.password-field input:focus {
+  border-color: var(--primary-color);
+}
+
+.password-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 4px;
 }
 
 .usage-section h2 {
@@ -598,6 +749,10 @@ function formatBytes(value?: number): string {
 }
 
 .profile-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding-top: 20px;
   border-top: 1px solid var(--divider-color);
 }
@@ -623,6 +778,19 @@ function formatBytes(value?: number): string {
   .nickname-edit {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .profile-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .security-row {
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 0;
   }
 }
 </style>

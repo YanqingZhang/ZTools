@@ -4,7 +4,6 @@ publish:
   provider: github
   owner: ZToolsCenter
   repo: ZTools
-electronUpdaterCompatibility: '>=2.16'
 directories:
   buildResources: build
 files:
@@ -17,6 +16,7 @@ files:
   - '!{.env,.env.*,.npmrc,.gitmodules,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,tsconfig.*.tsbuildinfo,vitest.config.*}'
   - '!{.claude/**,.githooks/**,.github/**}'
+  - '!AGENTS.md'
   - '!docs/**'
   - '!tests/**'
   - '!updater/**'
@@ -24,6 +24,12 @@ files:
   - '!ztools-plugin-cli/**'
   - '!scripts/**'
   - '!internal-plugins/**'
+  - '!**/*.map'
+  - '!**/node_modules/**/*.{d.ts,d.cts,d.mts}'
+  - '!**/node_modules/openai/src/**'
+  - '!**/node_modules/@mixmark-io/domino/.yarn/**'
+  - '!**/node_modules/lmdb/{dependencies,src}/**'
+  - '!**/node_modules/uiohook-napi/{libuiohook,src}/**'
 asarUnpack:
   - resources/**
   - '**/node_modules/sharp/**/*'
@@ -34,6 +40,7 @@ fileAssociations:
     description: ZTools Plugin Package
     role: Viewer
 win:
+  compression: maximum
   executableName: ZTools
   artifactName: ${name}-${version}-${os}-${arch}.${ext}
   target:
@@ -54,6 +61,7 @@ nsis:
   perMachine: false
   deleteAppDataOnUninstall: false
 mac:
+  compression: maximum
   # The Developer ID identity is selected by CSC_NAME in CI. Leaving this
   # unset keeps local builds compatible with machines that have no certificate.
   entitlements: build/entitlements.mac.plist

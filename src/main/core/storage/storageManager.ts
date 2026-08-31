@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import fs from 'fs'
 import path from 'path'
 import { EventEmitter } from 'events'
 import LmdbDatabase from '../lmdb'
@@ -116,6 +117,39 @@ export class StorageManager extends EventEmitter {
     this.persistCurrentAccountUid(normalizedUid)
 
     this.emit('account-switched', { uid: normalizedUid })
+  }
+
+  /**
+   * 关闭当前账号数据库、切回默认数据空间，并永久删除该账号的本地数据库目录。
+   * @param uid 要删除的当前账号标识。
+   * @returns 无返回值。
+   * @throws 账号标识为空、与当前账号不一致或目录边界校验失败时抛出错误。
+   */
+  deleteCurrentAccount(uid: string): void {
+    this.init()
+    const normalizedUid = uid?.trim()
+
+    // 只允许调用方删除当前已激活账号，避免误删默认空间或其他账号。
+    if (!normalizedUid) throw new Error('删除本地账号数据时账号标识不能为空')
+    if (!this.currentAccountUid || normalizedUid !== this.currentAccountUid) {
+      throw new Error('待删除账号与当前本地账号不一致')
+    }
+
+    const layout = this.getLayout()
+    const accountsRoot = path.resolve(layout.accountsRoot)
+    const accountPath = path.resolve(this.accountPathForUid(normalizedUid, layout))
+    const defaultAccountPath = path.resolve(layout.defaultAccountLmdbPath)
+
+    // 删除目标必须是 accounts 的直属哈希目录，且绝不能命中默认数据空间。
+    if (path.dirname(accountPath) !== accountsRoot || accountPath === defaultAccountPath) {
+      throw new Error('待删除账号目录超出允许范围')
+    }
+
+    // 先切换并关闭旧 LMDB 句柄，确保文件系统允许递归删除账号目录。
+    this.switchAccount(null)
+
+    // 状态切换完成后再做不可恢复的目录清理，保留默认空间和其他账号数据。
+    fs.rmSync(accountPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
   }
 
   close(): void {

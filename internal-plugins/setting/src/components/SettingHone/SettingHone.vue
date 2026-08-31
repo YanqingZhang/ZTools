@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { LeftMenu } from '@/components'
-import { onMounted } from 'vue'
+import { onBeforeUnmount, onMounted } from 'vue'
+import { startNotificationPolling, stopNotificationPolling } from '@/composables'
 import { applyInitialAppearance } from './applyInitialAppearance'
 
 onMounted(() => {
+  startNotificationPolling()
   // 页面挂载后立即应用已持久化的外观配置。
   void applyInitialAppearance({
     dbGet: (key) => window.ztools.internal.dbGet(key),
@@ -13,6 +15,10 @@ onMounted(() => {
   }).catch((error) => {
     console.error('初始化设置页外观失败:', error)
   })
+})
+
+onBeforeUnmount(() => {
+  stopNotificationPolling()
 })
 </script>
 

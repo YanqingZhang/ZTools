@@ -22,7 +22,12 @@ import {
   UploadBlobTaskPayload
 } from './syncTaskStore'
 import { ACCOUNT_SYNC_PREFIXES } from '../storage/storageRouting'
-import { coordinateTokenRefresh } from './tokenRefreshCoordinator'
+import {
+  clearInvalidStoredAccessToken,
+  loadStoredSyncConfig,
+  refreshStoredSyncTokens,
+  type StoredSyncConfig
+} from './syncAuthTokenService'
 
 /**
  * WebSocket 同步客户端
@@ -48,6 +53,7 @@ export class SyncClient extends EventEmitter {
   private shouldResetRemoteCheckpoint: boolean = false
   private checkpointId: string = ''
   private checkpointLoadedFromRemote: boolean = false
+  private authReconnectBlocked: boolean = false
 
   // 分批推送状态
   private pushQueue: FullChangeEntry[] = []
@@ -89,7 +95,9 @@ export class SyncClient extends EventEmitter {
   }
 
   /**
-   * 启动同步
+   * 使用给定账号配置启动同步、重试调度和 WebSocket 连接。
+   * @param config 当前账号的同步配置。
+   * @returns 无返回值。
    */
   start(config: SyncConfig): void {
     this.startTraceAt = Date.now()
@@ -100,13 +108,10 @@ export class SyncClient extends EventEmitter {
       serverUrl: config.serverUrl
     })
     this.config = config
+    this.authReconnectBlocked = false
     this.setState('connecting')
     console.log(`[SyncClient][Trace] state connecting +${Date.now() - this.startTraceAt}ms`)
-    this.checkAndResetOnAccountSwitch(config.username)
-    console.log(
-      `[SyncClient][Trace] account checkpoint check done +${Date.now() - this.startTraceAt}ms`
-    )
-    this.checkpoint = this.checkpointStore.load(config.username, config.deviceId)
+    this.checkpoint = this.checkpointStore.load(config.username, config.deviceId, config.serverUrl)
     this.remotePullSeq = this.checkpoint.remotePullSeq
     this.localPushSeq = this.checkpoint.localPushSeq
     console.log('[SyncClient][Trace] checkpoint loaded', {
@@ -187,8 +192,43 @@ export class SyncClient extends EventEmitter {
     this.beginBatchPush(fullChanges)
   }
 
+  /**
+   * 统计指定同步目标尚未确认的唯一文档数量。
+   * @param config 要查询的同步目标；省略时使用当前活动配置。
+   * @returns 当前目标 checkpoint 之后的文档和删除记录数量。
+   */
+  getPendingDocumentCount(config?: SyncConfig | null): number {
+    const activeConfig = config || this.config
+    const checkpoint = activeConfig
+      ? this.checkpointStore.load(
+          activeConfig.username,
+          activeConfig.deviceId,
+          activeConfig.serverUrl
+        )
+      : this.checkpoint
+    const pendingDocIds = new Set<string>()
+
+    for (const change of this.db.getChangesSince(checkpoint.localPushSeq)) {
+      if (this.isSyncDocument(change.docId)) pendingDocIds.add(change.docId)
+    }
+
+    // 新同步目标尚无本地游标时，当前快照中的文档也必须进入首次推送。
+    if (checkpoint.localPushSeq === 0) {
+      for (const prefix of SYNC_PREFIXES) {
+        for (const doc of this.db.allDocs(prefix)) pendingDocIds.add(doc._id)
+      }
+    }
+
+    return pendingDocIds.size
+  }
+
+  /**
+   * 重置当前同步目标的 checkpoint 和重试任务，并按本地快照重新排队。
+   * @param config 要重置的同步目标；省略时使用当前活动配置。
+   * @returns 重新排队的文档数量和清理的重试任务数量。
+   */
   resetLocalSyncState(config?: SyncConfig | null): {
-    documentsMarked: number
+    documentsQueued: number
     tasksCleared: number
   } {
     const activeConfig = config || this.config
@@ -202,21 +242,25 @@ export class SyncClient extends EventEmitter {
     this.fullScanPushUpperSeq = null
     this.checkpointLoadedFromRemote = false
 
-    const documentsMarked = this.markAllLocalDocsUnsynced()
     const tasksCleared = this.taskStore.clear()
 
-    this.checkpoint = this.checkpointStore.reset(activeConfig?.username, activeConfig?.deviceId)
+    this.checkpoint = this.checkpointStore.reset(
+      activeConfig?.username,
+      activeConfig?.deviceId,
+      activeConfig?.serverUrl
+    )
     this.remotePullSeq = 0
     this.localPushSeq = 0
     this.checkpointId = activeConfig ? this.buildCheckpointIdFor(activeConfig) : ''
     this.shouldResetRemoteCheckpoint = Boolean(activeConfig?.enabled)
+    const documentsQueued = this.getPendingDocumentCount(activeConfig)
     this.retryScheduler.emitStatus()
 
     if (activeConfig && shouldRestart) {
       this.start(activeConfig)
     }
 
-    return { documentsMarked, tasksCleared }
+    return { documentsQueued, tasksCleared }
   }
 
   private setState(state: SyncState): void {
@@ -237,6 +281,10 @@ export class SyncClient extends EventEmitter {
     }
   }
 
+  /**
+   * 创建 WebSocket 连接并注册认证、消息、关闭和错误处理流程。
+   * @returns 无返回值。
+   */
   private connect(): void {
     if (!this.config || !this.config.enabled) return
 
@@ -257,25 +305,15 @@ export class SyncClient extends EventEmitter {
 
     const ws = this.ws
 
-    ws.on('open', async () => {
+    ws.on('open', () => {
       if (this.ws !== ws) return
       console.log('[SyncClient] 连接已建立')
       console.log(`[SyncClient][Trace] websocket open +${Date.now() - this.startTraceAt}ms`)
       this.reconnectDelay = 1000
       this.setState('authenticating')
       console.log(`[SyncClient][Trace] state authenticating +${Date.now() - this.startTraceAt}ms`)
-
-      await this.ensureFreshAccessToken()
-      console.log(`[SyncClient][Trace] token checked +${Date.now() - this.startTraceAt}ms`)
-      if (this.ws !== ws || !this.config) return
-
-      // 发送认证
-      this.send({
-        type: 'auth',
-        token: this.config!.token,
-        deviceId: this.config!.deviceId,
-        deviceName: os.hostname(),
-        protocolVersion: SYNC_PROTOCOL_VERSION
+      void this.authenticateSocket(ws).catch((error) => {
+        this.handleSocketAuthenticationFailure(ws, error)
       })
     })
 
@@ -301,7 +339,7 @@ export class SyncClient extends EventEmitter {
       }
       this.stopHeartbeat()
       this.stopListeningLocalChanges()
-      this.setState('disconnected')
+      this.setState(this.authReconnectBlocked ? 'error' : 'disconnected')
       this.scheduleReconnect()
     })
 
@@ -324,7 +362,11 @@ export class SyncClient extends EventEmitter {
           !!msg.features?.snapshotPull &&
           (localProtocolVersion < SYNC_PROTOCOL_VERSION ||
             (serverEpoch > 0 && localEpoch < serverEpoch))
-        this.checkpoint = this.checkpointStore.load(this.config?.username, this.config?.deviceId)
+        this.checkpoint = this.checkpointStore.load(
+          this.config?.username,
+          this.config?.deviceId,
+          this.config?.serverUrl
+        )
         this.remotePullSeq = this.checkpoint.remotePullSeq
         this.localPushSeq = this.checkpoint.localPushSeq
         this.checkpointLoadedFromRemote = false
@@ -384,60 +426,148 @@ export class SyncClient extends EventEmitter {
     }
   }
 
-  private async ensureFreshAccessToken(): Promise<void> {
-    if (!this.config?.refreshToken || !isJwtExpiring(this.config.token)) {
-      return
-    }
-    await this.refreshAccessToken()
+  /**
+   * 使用设备级最新凭据完成当前 WebSocket 的认证，避免发送已被其他模块旋转的 token。
+   * @param ws 当前等待认证的 WebSocket 实例。
+   * @returns 认证帧发送完成后的 Promise。
+   * @throws 当凭据失效、账号切换或刷新服务暂时不可用时抛出错误。
+   */
+  private async authenticateSocket(ws: WebSocket): Promise<void> {
+    await this.ensureFreshAccessToken()
+    console.log(`[SyncClient][Trace] token checked +${Date.now() - this.startTraceAt}ms`)
+    if (this.ws !== ws || !this.config) return
+
+    // 仅向仍处于活动状态的连接发送最新认证凭据。
+    ws.send(
+      JSON.stringify({
+        type: 'auth',
+        token: this.config.token,
+        deviceId: this.config.deviceId,
+        deviceName: os.hostname(),
+        protocolVersion: SYNC_PROTOCOL_VERSION
+      } satisfies ClientMessage)
+    )
   }
 
+  /**
+   * 收口 WebSocket 打开后的异步认证异常，并决定是否允许自动重连。
+   * @param ws 发生认证异常的 WebSocket 实例。
+   * @param error 捕获到的认证错误。
+   * @returns 无返回值。
+   */
+  private handleSocketAuthenticationFailure(ws: WebSocket, error: unknown): void {
+    if (this.ws !== ws) return
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('[SyncClient] WebSocket 认证失败:', error)
+
+    if (error instanceof SyncCredentialsInvalidError) {
+      // 确认失效后阻断重连，避免持续消耗连接并停留在“认证中”。
+      this.authReconnectBlocked = true
+      if (this.config) {
+        this.config = { ...this.config, enabled: false, token: '', refreshToken: '' }
+      }
+    }
+    this.emit('sync-error', message)
+    this.setState('error')
+    ws.close()
+  }
+
+  /**
+   * 重新加载设备级凭据，并在访问令牌临近过期时刷新。
+   * @returns 凭据准备完成后的 Promise。
+   * @throws 当本地配置已切换账号、凭据失效或刷新暂时失败时抛出错误。
+   */
+  private async ensureFreshAccessToken(): Promise<void> {
+    const latest = await loadStoredSyncConfig()
+    this.applyStoredCredentials(latest)
+    if (!this.config?.token) {
+      throw new SyncCredentialsInvalidError('登录状态已失效，请重新登录')
+    }
+    if (this.config.refreshToken && isJwtExpiring(this.config.token)) {
+      await this.refreshAccessToken()
+    }
+  }
+
+  /**
+   * 在服务端拒绝访问令牌后强制刷新，并使用新凭据重新建立连接。
+   * @returns 刷新和重连调度完成后的 Promise。
+   */
   private async refreshAfterAuthFailure(): Promise<void> {
-    if (!this.config?.refreshToken) return
     try {
+      if (!this.config?.refreshToken) {
+        const rejectedToken = this.config?.token || ''
+        this.authReconnectBlocked = true
+        if (this.config) {
+          this.config = { ...this.config, enabled: false, token: '' }
+        }
+        this.setState('error')
+        if (rejectedToken) {
+          await clearInvalidStoredAccessToken(rejectedToken)
+        }
+        return
+      }
       await this.refreshAccessToken(true)
       this.disconnect(false)
       setImmediate(() => this.connect())
     } catch (err) {
       console.error('[SyncClient] 刷新认证失败:', err)
+      if (err instanceof SyncCredentialsInvalidError) {
+        this.authReconnectBlocked = true
+        this.setState('error')
+      }
     }
   }
 
+  /**
+   * 通过统一刷新服务旋转当前账号 token，并同步更新内存配置。
+   * @param force 是否忽略访问令牌有效期并强制刷新。
+   * @returns 刷新和内存配置更新完成后的 Promise。
+   * @throws 当账号已切换、refresh token 失效或刷新服务暂时不可用时抛出错误。
+   */
   private async refreshAccessToken(force = false): Promise<void> {
+    const latest = await loadStoredSyncConfig()
+    this.applyStoredCredentials(latest)
     if (!this.config?.refreshToken) {
-      throw new Error('Missing refresh token')
+      throw new SyncCredentialsInvalidError('登录状态已失效，请重新登录')
     }
-    if (!force && !isJwtExpiring(this.config.token)) {
+    if (!force && this.config.token && !isJwtExpiring(this.config.token)) {
       return
     }
     const currentRefreshToken = this.config.refreshToken
-    const tokens = await coordinateTokenRefresh(currentRefreshToken, async () => {
-      const response = await fetch(
-        `${syncServerUrlToHttp(this.config!.serverUrl)}/api/auth/refresh`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken: currentRefreshToken })
-        }
-      )
-      const data = await response.json()
-      if (!response.ok || !data?.token || !data?.refreshToken) return null
-      return { token: data.token, refreshToken: data.refreshToken }
-    })
-    if (!tokens) {
-      throw new Error('Refresh token failed')
+    const result = await refreshStoredSyncTokens(currentRefreshToken)
+    if (result.status === 'invalid') {
+      throw new SyncCredentialsInvalidError('登录状态已失效，请重新登录')
     }
-    const nextConfig: SyncConfig = {
+    if (result.status === 'unavailable') {
+      throw new Error('刷新登录状态失败，请稍后重试')
+    }
+    if (!this.applyStoredCredentials(result.config)) {
+      throw new Error('同步账号已切换')
+    }
+    if (!this.config?.token) {
+      throw new SyncCredentialsInvalidError('登录状态已失效，请重新登录')
+    }
+  }
+
+  /**
+   * 将设备级存储中的 token 应用到当前同步会话，并校验账号和服务地址未被切换。
+   * @param storedConfig 设备级存储读取到的最新同步配置。
+   * @returns 存储配置属于当前同步会话并已应用时返回 true。
+   */
+  private applyStoredCredentials(storedConfig: StoredSyncConfig | null): boolean {
+    if (!this.config || !storedConfig) return false
+    if (
+      storedConfig.serverUrl !== this.config.serverUrl ||
+      (storedConfig.username || '') !== (this.config.username || '')
+    ) {
+      return false
+    }
+    this.config = {
       ...this.config,
-      token: tokens.token,
-      refreshToken: tokens.refreshToken
+      token: storedConfig.token || '',
+      refreshToken: storedConfig.refreshToken || ''
     }
-    this.config = nextConfig
-    const existingDoc = await (this.db as any).promises.get('SYNC/config')
-    await (this.db as any).promises.put({
-      _id: 'SYNC/config',
-      _rev: existingDoc?._rev,
-      data: nextConfig
-    })
+    return true
   }
 
   // ==================== 阶段一：拉取 ====================
@@ -622,17 +752,22 @@ export class SyncClient extends EventEmitter {
     this.beginBatchPush(fullChanges)
   }
 
+  /**
+   * 为没有本地 checkpoint 的同步目标构建完整文档和删除快照。
+   * @returns 无返回值。
+   */
   private startFullScanPush(): void {
     const syncPrefixes = SYNC_PREFIXES
     const fullChanges: FullChangeEntry[] = []
+    const currentDocIds = new Set<string>()
     const now = Date.now()
     this.fullScanPushUpperSeq = this.db.getLastSeq()
 
     for (const prefix of syncPrefixes) {
       const docs = this.db.allDocs(prefix)
       for (const doc of docs) {
+        currentDocIds.add(doc._id)
         const meta = this.db.getSyncMeta(doc._id)
-        if (meta?._cloudSynced) continue // 已从云端同步，无需回传
         fullChanges.push(
           this.withRevisionHistory({
             seq: 0,
@@ -644,6 +779,23 @@ export class SyncClient extends EventEmitter {
           })
         )
       }
+    }
+
+    // checkpoint 丢失或目标首次连接时，全量快照还必须包含最新删除 tombstone。
+    const latestChanges = new Map<string, FullChangeEntry>()
+    for (const change of this.db.getChangesSince(0)) {
+      if (!this.isSyncDocument(change.docId)) continue
+      latestChanges.set(change.docId, { ...change, doc: null })
+    }
+    for (const change of latestChanges.values()) {
+      if (!change.deleted || currentDocIds.has(change.docId)) continue
+      fullChanges.push(
+        this.withRevisionHistory({
+          ...change,
+          seq: 0,
+          doc: null
+        })
+      )
     }
 
     if (fullChanges.length === 0) {
@@ -800,48 +952,16 @@ export class SyncClient extends EventEmitter {
       })
   }
 
+  /**
+   * 完成当前批次队列，并在客户端仍处于推送状态时进入实时模式。
+   * @returns 无返回值。
+   */
   private finishAllPush(): void {
-    // 批量标记所有同步前缀的文档为已同步
-    const syncPrefixes = SYNC_PREFIXES
-    const syncApi = (this.db as any).syncApi
-    if (syncApi?.batchUpdateSyncStatus) {
-      const ids: string[] = []
-      for (const prefix of syncPrefixes) {
-        const docs = this.db.allDocs(prefix)
-        for (const doc of docs) {
-          ids.push(doc._id)
-        }
-      }
-      if (ids.length > 0) {
-        syncApi.batchUpdateSyncStatus(ids, true)
-      }
-    }
-
     console.log(`[SyncClient] 全部推送完成, localPushSeq: ${this.localPushSeq}`)
 
     if (this.state === 'pushing') {
       this.enterLiveMode()
     }
-  }
-
-  private markAllLocalDocsUnsynced(): number {
-    const docIds = new Set<string>()
-    for (const prefix of SYNC_PREFIXES) {
-      for (const doc of this.db.allDocs(prefix)) {
-        docIds.add(doc._id)
-      }
-    }
-
-    const syncApi = (this.db as any).syncApi
-    if (syncApi?.batchUpdateSyncStatus) {
-      syncApi.batchUpdateSyncStatus([...docIds], false)
-    } else {
-      for (const docId of docIds) {
-        ;(this.db as any).promises?.updateSyncStatus?.(docId, false)
-      }
-    }
-
-    return docIds.size
   }
 
   // ==================== 阶段三：实时同步 ====================
@@ -1233,6 +1353,15 @@ export class SyncClient extends EventEmitter {
     return 0
   }
 
+  /**
+   * 判断文档是否属于账号同步白名单。
+   * @param docId 待检查的文档 ID。
+   * @returns 文档需要进入同步链路时返回 true。
+   */
+  private isSyncDocument(docId: string): boolean {
+    return SYNC_PREFIXES.some((prefix) => docId.startsWith(prefix))
+  }
+
   // ==================== 辅助方法 ====================
 
   private send(msg: ClientMessage): void {
@@ -1254,8 +1383,12 @@ export class SyncClient extends EventEmitter {
     }
   }
 
+  /**
+   * 在同步仍启用且认证未被阻断时按指数退避调度重连。
+   * @returns 无返回值。
+   */
   private scheduleReconnect(): void {
-    if (!this.config?.enabled) return
+    if (!this.config?.enabled || this.authReconnectBlocked) return
 
     this.reconnectTimer = setTimeout(() => {
       console.log(`[SyncClient] 重连中 (delay: ${this.reconnectDelay}ms)`)
@@ -1290,29 +1423,26 @@ export class SyncClient extends EventEmitter {
     this.currentPushTaskId = null
     this.retryScheduler.emitStatus()
   }
+}
 
+class SyncCredentialsInvalidError extends Error {
   /**
-   * 检测账号切换：若当前账号与上次不同，清零两个 seq，触发全量同步
+   * 创建一个可阻断自动重连的凭据失效错误。
+   * @param message 展示给同步状态界面的错误消息。
+   * @returns 初始化后的凭据失效错误实例。
    */
-  private checkAndResetOnAccountSwitch(currentUid?: string): void {
-    if (!currentUid) return
-    try {
-      const metaDb = this.db.getMetaDb()
-      const storedUid = metaDb.get('_sync_uid')
-      if (storedUid === currentUid) return
-
-      // 账号切换（或首次登录）：清零所有同步进度
-      console.log(`[SyncClient] 账号切换 ${storedUid || '(首次)'} → ${currentUid}，重置同步进度`)
-      this.checkpoint = this.checkpointStore.reset(currentUid, this.config?.deviceId)
-      metaDb.putSync('_sync_uid', currentUid)
-      this.remotePullSeq = 0
-      this.localPushSeq = 0
-    } catch {
-      // 忽略
-    }
+  constructor(message: string) {
+    super(message)
+    this.name = 'SyncCredentialsInvalidError'
   }
 }
 
+/**
+ * 判断 JWT 是否已经过期或将在给定提前量内过期。
+ * @param token 待检查的 JWT 字符串。
+ * @param skewMs 提前判定为过期的毫秒数。
+ * @returns token 无法解析、缺少过期时间或即将过期时返回 true。
+ */
 function isJwtExpiring(token: string, skewMs = 60000): boolean {
   try {
     const parts = token.split('.')
@@ -1324,8 +1454,4 @@ function isJwtExpiring(token: string, skewMs = 60000): boolean {
   } catch {
     return true
   }
-}
-
-function syncServerUrlToHttp(serverUrl: string): string {
-  return serverUrl.replace(/^ws:\/\//, 'http://').replace(/^wss:\/\//, 'https://')
 }

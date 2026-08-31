@@ -3,6 +3,8 @@
 // Ambient type declarations for renderer, so TS knows window.ztools
 
 import type { CommonKeyboardModifier } from '@renderer/utils/convertKeyboardEvent'
+import type { SearchWallpaperConfig } from '@shared/searchWallpaper'
+import type { AiRequestStatusChange } from '@shared/aiRequestStatus'
 
 /**
  * 上次匹配状态接口
@@ -81,10 +83,13 @@ declare global {
         name?: string
         cmdType?: string // cmd 类型（用于判断是否添加历史记录）
         confirmDialog?: any // 确认对话框配置
+        launchSource?: 'search' | 'global-shortcut' | 'super-panel'
       }) => Promise<any>
       launchAsAdmin: (appPath: string, name?: string) => Promise<void>
       hideWindow: () => void
       resizeWindow: (height: number) => void
+      onUpdateCompactMainWindowHeader: (callback: (enabled: boolean) => void) => () => void
+      onUpdateHideMainWindowOnPluginEsc: (callback: (enabled: boolean) => void) => () => void
       updateLaunchContext: (context: {
         searchQuery: string
         pastedImage: string | null
@@ -280,7 +285,10 @@ declare global {
       openSettings: () => void
       onUpdatePlaceholder: (callback: (placeholder: string) => void) => void
       onUpdateAvatar: (callback: (avatar: string) => void) => void
-      onAiStatusChanged: (callback: (status: 'idle' | 'sending' | 'receiving') => void) => void
+      onUpdateSearchWallpaper: (
+        callback: (wallpaper: SearchWallpaperConfig | null) => void
+      ) => () => void
+      onAiStatusChanged: (callback: (change: AiRequestStatusChange) => void) => void
       onUpdateAutoPaste: (callback: (autoPaste: string) => void) => void
       onUpdateAutoClear: (callback: (autoClear: string) => void) => void
       onUpdateShowRecentInSearch: (callback: (showRecentInSearch: boolean) => void) => void
@@ -312,7 +320,11 @@ declare global {
           error?: string
         }>
         showUpdateWindow: () => Promise<{ success: boolean; error?: string }>
-        startUpdate: () => Promise<{ success: boolean; error?: string }>
+        startUpdate: (
+          sourceID?: number
+        ) => Promise<{ success: boolean; cancelled?: boolean; error?: string }>
+        cancelUpdate: () => Promise<{ success: boolean; cancelled?: boolean; error?: string }>
+        openDownloadSource: (sourceID: number) => Promise<{ success: boolean; error?: string }>
         installDownloadedUpdate: () => Promise<{ success: boolean; error?: string }>
         getDownloadStatus: () => Promise<{
           hasUpdate: boolean

@@ -73,6 +73,42 @@ describe('ZTools 3.0 storage routing', () => {
     manager.close()
   })
 
+  it('keeps the official account on the device and private sync settings in each data space', () => {
+    const homeDir = makeTempRoot()
+    const manager = new StorageManager({ homeDir, mapSize: 128 * 1024 * 1024 })
+    const db = manager.getRouter()
+
+    db.put({
+      _id: 'AUTH/official-account',
+      data: { username: 'official-user', token: 'official-token' }
+    })
+    db.put({ _id: 'SYNC/profile', data: { provider: 'private', enabled: true } })
+    db.put({
+      _id: 'SYNC/private-session',
+      data: { serverUrl: 'ws://private.example', username: 'private-user', token: 'private-token' }
+    })
+
+    expect(manager.getDeviceDb().get('AUTH/official-account')?.data.username).toBe('official-user')
+    expect(manager.getDeviceDb().get('SYNC/profile')).toBeNull()
+    expect(manager.getDeviceDb().get('SYNC/private-session')).toBeNull()
+    expect(manager.getAccountDb().get('SYNC/profile')?.data.provider).toBe('private')
+    expect(manager.getAccountDb().get('SYNC/private-session')?.data.username).toBe('private-user')
+
+    manager.switchAccount('alice')
+    expect(manager.getRouter().get('AUTH/official-account')?.data.token).toBe('official-token')
+    expect(manager.getRouter().get('SYNC/profile')).toBeNull()
+    expect(manager.getRouter().get('SYNC/private-session')).toBeNull()
+
+    manager.getRouter().put({
+      _id: 'SYNC/profile',
+      data: { provider: 'official', enabled: false }
+    })
+    manager.switchAccount(null)
+    expect(manager.getRouter().get('SYNC/profile')?.data.provider).toBe('private')
+    expect(manager.getRouter().get('SYNC/private-session')?.data.username).toBe('private-user')
+    manager.close()
+  })
+
   it('uses stable hashed account directory names', () => {
     const homeDir = makeTempRoot()
     const manager = new StorageManager({ homeDir, mapSize: 128 * 1024 * 1024 })
@@ -98,6 +134,55 @@ describe('ZTools 3.0 storage routing', () => {
     expect(managerB.getCurrentAccountUid()).toBe('alice')
     expect(managerB.getRouter().get('PLUGIN/demo/settings')?.data.value).toBe('alice')
     managerB.close()
+  })
+
+  it('deletes only the current account directory and returns to persistent default storage', () => {
+    const homeDir = makeTempRoot()
+    const layout = getZToolsDataLayout({ homeDir })
+    const manager = new StorageManager({ homeDir, mapSize: 128 * 1024 * 1024 })
+
+    manager.getRouter().put({ _id: 'PLUGIN/demo/settings', data: { value: 'default' } })
+    manager.switchAccount('other-user')
+    manager.getRouter().put({ _id: 'PLUGIN/demo/settings', data: { value: 'other' } })
+    const otherAccountPath = path.join(layout.accountsRoot, hashAccountId('other-user'))
+
+    manager.switchAccount('delete-user')
+    manager.getRouter().put({ _id: 'PLUGIN/demo/settings', data: { value: 'delete-me' } })
+    const deletedAccountPath = path.join(layout.accountsRoot, hashAccountId('delete-user'))
+    expect(fs.existsSync(deletedAccountPath)).toBe(true)
+
+    manager.deleteCurrentAccount(' delete-user ')
+
+    expect(manager.getCurrentAccountUid()).toBeNull()
+    expect(manager.getRouter().get('PLUGIN/demo/settings')?.data.value).toBe('default')
+    expect(manager.getDeviceDb().get('SYNC/current-account')?.data.uid).toBeNull()
+    expect(fs.existsSync(deletedAccountPath)).toBe(false)
+    expect(fs.existsSync(otherAccountPath)).toBe(true)
+    expect(fs.existsSync(layout.defaultAccountLmdbPath)).toBe(true)
+    manager.close()
+
+    const reopenedManager = new StorageManager({ homeDir, mapSize: 128 * 1024 * 1024 })
+    expect(reopenedManager.getCurrentAccountUid()).toBeNull()
+    expect(reopenedManager.getRouter().get('PLUGIN/demo/settings')?.data.value).toBe('default')
+    reopenedManager.close()
+  })
+
+  it('rejects deleting an empty, default, or non-current account', () => {
+    const homeDir = makeTempRoot()
+    const layout = getZToolsDataLayout({ homeDir })
+    const manager = new StorageManager({ homeDir, mapSize: 128 * 1024 * 1024 })
+
+    expect(() => manager.deleteCurrentAccount('')).toThrow('账号标识不能为空')
+    expect(() => manager.deleteCurrentAccount('default')).toThrow('与当前本地账号不一致')
+    expect(fs.existsSync(layout.defaultAccountLmdbPath)).toBe(true)
+
+    manager.switchAccount('current-user')
+    const currentAccountPath = path.join(layout.accountsRoot, hashAccountId('current-user'))
+    expect(() => manager.deleteCurrentAccount('another-user')).toThrow('与当前本地账号不一致')
+    expect(manager.getCurrentAccountUid()).toBe('current-user')
+    expect(fs.existsSync(currentAccountPath)).toBe(true)
+    expect(fs.existsSync(layout.defaultAccountLmdbPath)).toBe(true)
+    manager.close()
   })
 })
 
@@ -255,7 +340,9 @@ describe('ZTools 3.0 legacy import', () => {
     expect(importedCloudState._deleted).toBeUndefined()
     expect(importedCloudState._conflicts).toBeUndefined()
     expect(importedCloudState._revisions).toBeUndefined()
-    expect(manager.getAccountDb().getSyncMeta('PLUGIN/demo/cloud-state')?._cloudSynced).toBe(false)
+    expect(manager.getAccountDb().getSyncMeta('PLUGIN/demo/cloud-state')).not.toHaveProperty(
+      '_cloudSynced'
+    )
     expect(
       manager
         .getAccountDb()
@@ -388,7 +475,9 @@ describe('ZTools 3.0 default account import after login', () => {
     expect(result.importedDocs).toBe(1)
     expect(result.importedAttachments).toBe(1)
     expect(manager.getRouter().get('PLUGIN/demo/settings')?.data.value).toBe('default-data')
-    expect(manager.getRouter().getSyncMeta('PLUGIN/demo/settings')?._cloudSynced).toBe(false)
+    expect(manager.getRouter().getSyncMeta('PLUGIN/demo/settings')).not.toHaveProperty(
+      '_cloudSynced'
+    )
     expect(
       Buffer.from(manager.getRouter().getAttachment('PLUGIN/demo/settings') || []).toString()
     ).toBe('hello')

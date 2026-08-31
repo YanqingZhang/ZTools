@@ -87,6 +87,7 @@ export type ServerMessage =
   | {
       type: 'auth_ok'
       serverSeq: number
+      serverInstanceId?: string
       protocolVersion?: number
       syncEpoch?: number
       features?: SyncFeatures

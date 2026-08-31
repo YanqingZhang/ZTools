@@ -97,10 +97,19 @@ class MacPlatformUpdater implements PlatformUpdaterService {
    * @returns 更新启动结果。
    */
   public async startUpdate(updateInfo?: PlatformUpdateInfo): Promise<PlatformUpdateActionResult> {
-    if (this.updater) return this.updater.downloadAndInstall()
+    if (this.updater) return this.updater.downloadAndInstall(updateInfo)
 
     await shell.openExternal(updateInfo?.releaseUrl || MAC_RELEASE_URL)
     return { success: true, migrationRequired: true }
+  }
+
+  /**
+   * 取消当前 macOS 应用内更新下载。
+   * @returns 下载请求完全结束后的取消结果。
+   */
+  public async cancelUpdate(): Promise<PlatformUpdateActionResult> {
+    if (this.updater) return this.updater.cancelUpdate()
+    return { success: false, error: '当前没有正在下载的更新' }
   }
 
   /**

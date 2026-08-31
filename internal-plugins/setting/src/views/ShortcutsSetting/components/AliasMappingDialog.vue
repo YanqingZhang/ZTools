@@ -182,7 +182,6 @@ defineExpose({
               class="input"
               placeholder="输入自定义别名"
               @keyup.enter="handleSave"
-              @keyup.escape="handleCancel"
             />
           </div>
 

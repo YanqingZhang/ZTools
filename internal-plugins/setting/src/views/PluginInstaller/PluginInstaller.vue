@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useToast } from '@/components'
-import { useJumpFunction } from '@/composables'
+import { useEscapeHandler, useJumpFunction } from '@/composables'
 import { PluginInstallerJumpFunction } from '@/views/PluginInstaller/PluginInstaller'
 import { useRouter } from 'vue-router'
 
@@ -58,6 +58,22 @@ async function loadPluginInfo(filePath?: string): Promise<void> {
 function handleInstallClick(): void {
   showSecurityDialog.value = true
 }
+
+/**
+ * 关闭插件安装安全提示弹窗并消费 ESC。
+ * @param _event 当前键盘事件
+ * @returns 已消费 ESC 事件
+ */
+function handleSecurityDialogEscape(_event: KeyboardEvent): boolean {
+  showSecurityDialog.value = false
+  return true
+}
+
+// 安全提示弹窗必须先于安装详情页处理 ESC，避免误退出设置插件。
+useEscapeHandler(handleSecurityDialogEscape, {
+  enabled: () => showSecurityDialog.value,
+  priority: 300
+})
 
 async function confirmInstall(): Promise<void> {
   showSecurityDialog.value = false

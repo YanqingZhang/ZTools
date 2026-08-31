@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useToast } from '@/components'
 import { GITHUB_LATEST_RELEASE_URL, GITHUB_REPOSITORY_URL } from '@shared/updateSource'
 
@@ -8,11 +8,23 @@ const { info, error, confirm } = useToast()
 const appVersion = ref('')
 const isCheckingUpdate = ref(false)
 const autoCheckUpdate = ref(true)
+const receiveBetaUpdates = ref(false)
+const showUpdateOptions = ref(false)
 const currentYear = new Date().getFullYear()
+const showBetaUpdateOption = computed(
+  () => appVersion.value !== '' && appVersion.value !== '未知' && !appVersion.value.includes('-')
+)
 
 onMounted(async () => {
   await getAppVersion()
   await loadAutoCheckSetting()
+  window.addEventListener('click', closeUpdateOptions)
+  window.addEventListener('keydown', handleUpdateOptionsKeydown, true)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('click', closeUpdateOptions)
+  window.removeEventListener('keydown', handleUpdateOptionsKeydown, true)
 })
 
 async function getAppVersion(): Promise<void> {
@@ -76,6 +88,7 @@ async function loadAutoCheckSetting(): Promise<void> {
     const data = await window.ztools.internal.dbGet('settings-general')
     if (data) {
       autoCheckUpdate.value = data.autoCheckUpdate ?? true
+      receiveBetaUpdates.value = data.receiveBetaUpdates === true
     }
   } catch (err) {
     console.error('加载自动更新设置失败:', err)
@@ -94,6 +107,56 @@ async function handleAutoCheckUpdateChange(): Promise<void> {
     console.error('更新自动检查更新设置失败:', err)
   }
 }
+
+/**
+ * 打开或关闭更新高级选项菜单，并阻止当前点击触发外部关闭监听。
+ * @param event 三点按钮的点击事件。
+ * @returns 无返回值。
+ */
+function toggleUpdateOptions(event: MouseEvent): void {
+  event.stopPropagation()
+  showUpdateOptions.value = !showUpdateOptions.value
+}
+
+/**
+ * 关闭更新高级选项菜单。
+ * @returns 无返回值。
+ */
+function closeUpdateOptions(): void {
+  showUpdateOptions.value = false
+}
+
+/**
+ * 在更新高级选项打开时响应 Esc 键关闭菜单。
+ * @param event 窗口键盘事件。
+ * @returns 无返回值。
+ */
+function handleUpdateOptionsKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Escape' || !showUpdateOptions.value) return
+  event.stopPropagation()
+  closeUpdateOptions()
+}
+
+/**
+ * 保存 Beta 更新订阅偏好，并在开启时立即检查一次新版本。
+ * @returns 设置保存和可选更新检查完成后的 Promise。
+ */
+async function handleReceiveBetaUpdatesChange(): Promise<void> {
+  try {
+    // 与自动检查更新共用设备级设置，确保主进程心跳和手动检查读取同一状态。
+    const data = (await window.ztools.internal.dbGet('settings-general')) || {}
+    data.receiveBetaUpdates = receiveBetaUpdates.value
+    await window.ztools.internal.dbPut('settings-general', data)
+
+    // 开启订阅后立即检查，避免用户等待下一次半小时心跳。
+    if (receiveBetaUpdates.value && autoCheckUpdate.value) {
+      await window.ztools.internal.updaterCheckUpdate()
+    }
+  } catch (err) {
+    console.error('更新 Beta 版本订阅设置失败:', err)
+    error('Beta 更新设置保存失败')
+  }
+}
 </script>
 <template>
   <div class="content-panel">
@@ -109,6 +172,34 @@ async function handleAutoCheckUpdateChange(): Promise<void> {
         />
         <span class="toggle-slider"></span>
       </label>
+      <div v-if="showBetaUpdateOption" class="update-options-wrapper" @click.stop>
+        <button
+          class="icon-btn update-options-button"
+          type="button"
+          title="更新选项"
+          aria-label="更新选项"
+          :aria-expanded="showUpdateOptions"
+          @click="toggleUpdateOptions"
+        >
+          <div class="i-z-more" />
+        </button>
+        <Transition name="update-options">
+          <div v-if="showUpdateOptions" class="update-options-menu">
+            <div class="update-options-copy">
+              <span>接收 Beta 版本更新</span>
+              <small>开启后，正式版也会接收测试版本</small>
+            </div>
+            <label class="toggle beta-update-toggle">
+              <input
+                v-model="receiveBetaUpdates"
+                type="checkbox"
+                @change="handleReceiveBetaUpdatesChange"
+              />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </Transition>
+      </div>
     </div>
 
     <div class="about-container">
@@ -533,6 +624,72 @@ async function handleAutoCheckUpdateChange(): Promise<void> {
 .auto-update-label {
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+.update-options-wrapper {
+  position: relative;
+}
+
+.update-options-button {
+  font-size: 17px;
+}
+
+.update-options-button:hover,
+.update-options-button[aria-expanded='true'] {
+  background: var(--hover-bg);
+  color: var(--primary-color);
+}
+
+.update-options-menu {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  width: 276px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  box-sizing: border-box;
+  border: 1px solid var(--divider-color);
+  border-radius: 7px;
+  background: var(--dialog-bg);
+  box-shadow: 0 10px 28px var(--shadow-color);
+  padding: 13px 14px;
+  color: var(--text-color);
+}
+
+.update-options-copy {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 4px;
+}
+
+.update-options-copy span {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.update-options-copy small {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.beta-update-toggle {
+  flex: none;
+}
+
+.update-options-enter-active,
+.update-options-leave-active {
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
+}
+
+.update-options-enter-from,
+.update-options-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 /* 版权信息 */

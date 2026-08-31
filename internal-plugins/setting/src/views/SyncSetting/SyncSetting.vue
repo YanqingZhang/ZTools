@@ -1,17 +1,36 @@
 <script setup lang="ts">
 import { onActivated, onMounted, onUnmounted, ref, computed } from 'vue'
 import { useToast, DetailPanel } from '@/components'
+import { ONLINE_SYNC_SERVER_URL } from '@/composables/useZToolsAccount'
+import { normalizeSyncServerUrl } from '@shared/syncServerUrl'
 
 const { success, error, warning, confirm } = useToast()
-const ONLINE_SYNC_SERVER_URL = 'wss://z-tools.top'
+type DeploymentMode = 'official' | 'private'
 
 // 同步配置
 const syncEnabled = ref(false)
 const config = ref({
+  provider: 'official' as DeploymentMode,
   serverUrl: ONLINE_SYNC_SERVER_URL,
   syncInterval: 30,
   lastSyncTime: 0
 })
+const deploymentMode = ref<DeploymentMode>('official')
+const deploymentSwitching = ref(false)
+const privateFormDirty = ref(false)
+const privateServerUrl = ref('')
+const privateUsername = ref('')
+const privatePassword = ref('')
+const privateLoginLoading = ref(false)
+const privateLogoutLoading = ref(false)
+const privateConnectionTesting = ref(false)
+const privateConnectionMessage = ref('')
+const privateConnectionSucceeded = ref(false)
+const officialAccountLoggedIn = ref(false)
+const officialAccountUsername = ref('')
+const privateSessionLoggedIn = ref(false)
+const savedPrivateServerUrl = ref('')
+const savedPrivateUsername = ref('')
 
 // 是否已登录（有 token）
 const loggedIn = ref(false)
@@ -50,10 +69,6 @@ const conflictDetail = ref<{
 } | null>(null)
 let conflictDiffCache = new WeakMap<object, ConflictDiffView>()
 
-// 内部 token（不暴露给用户）
-let currentToken = ''
-let currentRefreshToken = ''
-
 // 状态映射
 const stateLabels: Record<string, string> = {
   disconnected: '未连接',
@@ -78,6 +93,7 @@ const stateColors: Record<string, string> = {
 const stateLabel = computed(() => stateLabels[syncState.value] || syncState.value)
 const stateColor = computed(() => stateColors[syncState.value] || 'var(--text-secondary)')
 const isConnected = computed(() => syncState.value === 'live')
+const isPrivateMode = computed(() => deploymentMode.value === 'private')
 const retryPendingTotal = computed(() => {
   const status = retryStatus.value
   if (!status) return 0
@@ -102,12 +118,24 @@ const lastSyncTime = computed(() => {
   return `${Math.floor(hours / 24)} 天前`
 })
 
+/**
+ * 将主进程持久化的同步状态映射到当前服务模式，并避免轮询覆盖用户正在填写的私服表单。
+ * @param status 主进程返回的同步状态快照。
+ * @returns 无返回值。
+ */
 function applySyncStatus(status: any): void {
-  const nextConfig = status?.config || null
-  const isOnlineAccount = nextConfig?.serverUrl === ONLINE_SYNC_SERVER_URL
+  const nextConfig = status?.profile || status?.config || null
+  const nextMode: DeploymentMode = nextConfig?.provider === 'private' ? 'private' : 'official'
 
-  syncEnabled.value = Boolean(isOnlineAccount && nextConfig?.enabled)
-  config.value.serverUrl = ONLINE_SYNC_SERVER_URL
+  if (nextConfig) {
+    deploymentMode.value = nextMode
+  }
+  const configMatchesSelection = Boolean(nextConfig && deploymentMode.value === nextMode)
+
+  syncEnabled.value = Boolean(configMatchesSelection && nextConfig?.enabled)
+  config.value.provider = nextMode
+  config.value.serverUrl =
+    nextMode === 'official' ? ONLINE_SYNC_SERVER_URL : nextConfig?.serverUrl || ''
   config.value.syncInterval = nextConfig?.syncInterval || 30
   config.value.lastSyncTime = status?.lastSyncTime || nextConfig?.lastSyncTime || 0
   syncState.value = status?.state || 'disconnected'
@@ -115,16 +143,239 @@ function applySyncStatus(status: any): void {
   conflictCount.value = status?.conflictCount || 0
   retryStatus.value = status?.retryStatus || null
 
-  if (nextConfig?.token && isOnlineAccount) {
-    loggedIn.value = true
-    loggedUser.value = nextConfig.username || status?.username || '已登录'
-    currentToken = nextConfig.token
-    currentRefreshToken = nextConfig.refreshToken || ''
-  } else {
+  officialAccountLoggedIn.value = Boolean(status?.officialAccount?.loggedIn)
+  officialAccountUsername.value = status?.officialAccount?.username || ''
+  privateSessionLoggedIn.value = Boolean(status?.privateSession?.loggedIn)
+  savedPrivateServerUrl.value = status?.privateSession?.serverUrl || ''
+  savedPrivateUsername.value = status?.privateSession?.username || ''
+
+  if (!privateFormDirty.value) {
+    privateServerUrl.value = savedPrivateServerUrl.value
+    privateUsername.value = savedPrivateUsername.value
+  }
+  updateSelectedLoginState()
+}
+
+/**
+ * 根据当前选择的服务类型展示对应且彼此独立的登录状态。
+ * @returns 无返回值。
+ */
+function updateSelectedLoginState(): void {
+  if (deploymentMode.value === 'official') {
+    loggedIn.value = officialAccountLoggedIn.value
+    loggedUser.value = officialAccountUsername.value
+    return
+  }
+  loggedIn.value = privateSessionLoggedIn.value
+  loggedUser.value = savedPrivateUsername.value
+}
+
+/**
+ * 标记私服表单已被用户编辑，防止后台状态轮询覆盖输入。
+ * @returns 无返回值。
+ */
+function markPrivateFormDirty(): void {
+  privateFormDirty.value = true
+  privateConnectionMessage.value = ''
+  privateConnectionSucceeded.value = false
+}
+
+/**
+ * 提示用户确认并持久化目标同步服务，成功后再切换页面状态。
+ * @param mode 用户选择的同步服务类型。
+ * @returns 服务模式切换完成后的 Promise。
+ */
+async function handleDeploymentModeChange(mode: DeploymentMode): Promise<void> {
+  if (mode === deploymentMode.value || privateLoginLoading.value || deploymentSwitching.value) {
+    return
+  }
+
+  deploymentSwitching.value = true
+  try {
+    const targetLabel = mode === 'private' ? '私有部署' : '官方服务'
+    const confirmed = await confirm({
+      title: '切换同步服务',
+      message: syncEnabled.value
+        ? `切换到${targetLabel}后，当前同步连接将停止。官方账号与私有服务账号相互独立，请确认目标服务已登录后重新开启同步。`
+        : `确定切换到${targetLabel}吗？官方账号与私有服务账号相互独立，切换后请确认目标服务的登录状态。`,
+      type: 'warning',
+      confirmText: `切换到${targetLabel}`,
+      cancelText: '取消'
+    })
+    if (!confirmed) return
+
+    // 将服务选择和关闭状态一次性保存；主进程会在保存成功后停止旧同步客户端。
+    const targetServerUrl =
+      mode === 'official' ? ONLINE_SYNC_SERVER_URL : savedPrivateServerUrl.value
+    const result = await window.ztools.internal.syncSaveConfig({
+      provider: mode,
+      enabled: false,
+      serverUrl: targetServerUrl,
+      syncInterval: config.value.syncInterval
+    })
+    if (!result.success) throw new Error(result.error || '保存同步服务失败')
+
+    // 持久化成功后再更新界面，失败时保持原服务和开关状态。
+    deploymentMode.value = mode
+    syncEnabled.value = false
+    config.value.provider = mode
+    config.value.serverUrl = targetServerUrl
+    syncState.value = 'disconnected'
+    privateConnectionMessage.value = ''
+    privateConnectionSucceeded.value = false
+    privatePassword.value = ''
+
+    if (mode === 'private' && !savedPrivateServerUrl.value) {
+      privateServerUrl.value = ''
+      privateUsername.value = ''
+      privateFormDirty.value = false
+    }
+    updateSelectedLoginState()
+    success(`已切换到${targetLabel}，同步保持关闭`)
+  } catch (err: any) {
+    error(`切换同步服务失败：${err.message}`)
+  } finally {
+    deploymentSwitching.value = false
+  }
+}
+
+/**
+ * 校验私服表单并返回规范化后的连接参数。
+ * @returns 规范化的服务器地址和已去除首尾空格的用户名。
+ * @throws 当服务器地址、用户名或密码缺失或不合法时抛出错误。
+ */
+function validatePrivateLoginForm(): { serverUrl: string; username: string } {
+  const serverUrl = normalizeSyncServerUrl(privateServerUrl.value)
+  const username = privateUsername.value.trim()
+  if (!username) throw new Error('请填写用户名')
+  if (!privatePassword.value) throw new Error('请填写密码')
+  return { serverUrl, username }
+}
+
+/**
+ * 测试当前私服地址是否能建立 WebSocket 连接。
+ * @returns 连接测试完成后的 Promise。
+ */
+async function handlePrivateConnectionTest(): Promise<void> {
+  privateConnectionTesting.value = true
+  privateConnectionMessage.value = ''
+  privateConnectionSucceeded.value = false
+  try {
+    const serverUrl = normalizeSyncServerUrl(privateServerUrl.value)
+    const result = await window.ztools.internal.syncTestConnection({ serverUrl })
+    if (!result.success) throw new Error(result.error || '无法连接服务器')
+    privateServerUrl.value = serverUrl
+    privateConnectionSucceeded.value = true
+    privateConnectionMessage.value = '连接正常'
+  } catch (err: any) {
+    privateConnectionMessage.value = err.message
+  } finally {
+    privateConnectionTesting.value = false
+  }
+}
+
+/**
+ * 使用账号密码登录私有同步服务器，并保存不包含明文密码的同步配置。
+ * @returns 私服登录和配置切换完成后的 Promise。
+ */
+async function handlePrivateLogin(): Promise<void> {
+  privateLoginLoading.value = true
+  privateConnectionMessage.value = ''
+  try {
+    const { serverUrl, username } = validatePrivateLoginForm()
+
+    // 登录前先验证 WebSocket 入口，给地址或反向代理配置错误更明确的反馈。
+    const connection = await window.ztools.internal.syncTestConnection({ serverUrl })
+    if (!connection.success) throw new Error(connection.error || '无法连接服务器')
+
+    const login = await window.ztools.internal.syncLoginPrivate({
+      serverUrl,
+      username,
+      password: privatePassword.value
+    })
+    if (!login.success || !login.token) throw new Error(login.error || '登录失败')
+
+    let previousServerUrl = savedPrivateServerUrl.value
+    try {
+      previousServerUrl = normalizeSyncServerUrl(previousServerUrl)
+    } catch {
+      // 历史配置无法规范化时按服务已切换处理，确保不会复用旧同步状态。
+    }
+    const serverChanged = previousServerUrl !== serverUrl
+    const saved = await window.ztools.internal.syncSaveConfig({
+      provider: 'private',
+      enabled: false,
+      serverUrl,
+      syncInterval: config.value.syncInterval
+    })
+    if (!saved.success) throw new Error(saved.error || '保存登录状态失败')
+
+    // 服务地址变化时自动重置本机进度，让文档和附件完整进入新服务的同步队列。
+    if (serverChanged) {
+      const reset = await window.ztools.internal.syncResetLocalSyncState()
+      if (!reset.success) {
+        warning(`已登录，但重置本机同步状态失败：${reset.error || '未知错误'}`)
+      }
+    }
+
+    privateSessionLoggedIn.value = true
+    savedPrivateServerUrl.value = serverUrl
+    savedPrivateUsername.value = username
+    privateServerUrl.value = serverUrl
+    privateUsername.value = username
+    privatePassword.value = ''
+    privateFormDirty.value = false
+    privateConnectionSucceeded.value = true
+    privateConnectionMessage.value = '已登录'
+    updateSelectedLoginState()
+    success('私有同步服务器登录成功')
+    await refreshSyncStatus()
+  } catch (err: any) {
+    error(`私有服务器登录失败：${err.message}`)
+  } finally {
+    // 密码只用于本次认证请求，成功或失败后都不继续保留在页面内存中。
+    privatePassword.value = ''
+    privateLoginLoading.value = false
+  }
+}
+
+/**
+ * 确认后注销当前私服会话，并保留服务器地址和用户名供再次登录。
+ * @returns 私服注销和状态刷新完成后的 Promise。
+ */
+async function handlePrivateLogout(): Promise<void> {
+  const confirmed = await confirm({
+    title: '注销私有同步服务器',
+    message: '注销会停止当前私服同步并清除登录令牌，但不会删除本地文档和附件。',
+    type: 'danger',
+    confirmText: '注销登录',
+    cancelText: '取消'
+  })
+  if (!confirmed) return
+
+  privateLogoutLoading.value = true
+  try {
+    const result = await window.ztools.internal.syncLogoutPrivate()
+    if (!result.success) throw new Error(result.error || '注销失败')
+
+    // 立即收敛本地界面状态，避免等待状态通知期间仍显示已连接。
+    syncEnabled.value = false
+    syncState.value = 'disconnected'
+    privateSessionLoggedIn.value = false
     loggedIn.value = false
-    loggedUser.value = ''
-    currentToken = ''
-    currentRefreshToken = ''
+    privatePassword.value = ''
+    privateConnectionMessage.value = ''
+    privateConnectionSucceeded.value = false
+    privateFormDirty.value = false
+    privateServerUrl.value = savedPrivateServerUrl.value
+    privateUsername.value = savedPrivateUsername.value
+
+    await refreshSyncStatus()
+    success('已注销私有同步服务器')
+  } catch (err: any) {
+    error(`注销失败：${err.message}`)
+  } finally {
+    privateLogoutLoading.value = false
   }
 }
 
@@ -469,7 +720,10 @@ function summaryLabel(conflict: any): string {
   return `修改 ${summary.changed} 行 · 新增 ${summary.added} 行 · 删除 ${summary.removed} 行`
 }
 
-// 开关切换
+/**
+ * 保存当前服务的同步启停状态，并在未登录时阻止误开启。
+ * @returns 配置保存和状态刷新完成后的 Promise。
+ */
 async function handleSyncToggle(): Promise<void> {
   try {
     if (!syncEnabled.value) {
@@ -477,8 +731,8 @@ async function handleSyncToggle(): Promise<void> {
       await window.ztools.internal.syncStopAutoSync()
     }
 
-    if (syncEnabled.value && !currentToken) {
-      warning('请先通过左下角登录 ZTools 账号')
+    if (syncEnabled.value && !loggedIn.value) {
+      warning(isPrivateMode.value ? '请先登录私有同步服务器' : '请先通过左下角登录 ZTools 账号')
       syncEnabled.value = false
       return
     }
@@ -488,12 +742,12 @@ async function handleSyncToggle(): Promise<void> {
     }
 
     const result = await window.ztools.internal.syncSaveConfig({
+      provider: deploymentMode.value,
       enabled: syncEnabled.value,
-      serverUrl: ONLINE_SYNC_SERVER_URL,
-      token: currentToken,
-      refreshToken: currentRefreshToken,
-      syncInterval: config.value.syncInterval,
-      username: loggedUser.value
+      serverUrl: isPrivateMode.value
+        ? normalizeSyncServerUrl(privateServerUrl.value || savedPrivateServerUrl.value)
+        : ONLINE_SYNC_SERVER_URL,
+      syncInterval: config.value.syncInterval
     })
     if (!result.success) {
       error(`保存失败：${result.error}`)
@@ -560,13 +814,17 @@ async function forcePushAll(): Promise<void> {
 }
 
 const resettingSyncState = ref(false)
+/**
+ * 重置当前服务的本地 checkpoint，并触发该目标重新同步本地快照。
+ * @returns 操作和状态刷新完成后的 Promise。
+ */
 async function resetLocalSyncState(): Promise<void> {
   const confirmed = await confirm({
     title: '重置本机同步状态',
     message:
-      '确定要将本机所有同步数据标记为未同步吗？这不会删除本地文档和附件，但会清空本机同步进度；下次同步会重新上传本地数据。',
+      '确定要重置当前服务的本机同步进度吗？这不会删除本地文档、附件或其他同步服务的进度；下次同步会重新上传当前数据。',
     type: 'warning',
-    confirmText: '标记为未同步',
+    confirmText: '重置进度',
     cancelText: '取消'
   })
   if (!confirmed) return
@@ -579,7 +837,7 @@ async function resetLocalSyncState(): Promise<void> {
       return
     }
 
-    success(`已将 ${result.documentsMarked || 0} 个文档标记为未同步`)
+    success(`已将 ${result.documentsQueued || 0} 个文档加入当前服务的同步队列`)
     await refreshSyncStatus()
   } catch (err: any) {
     error(`重置失败：${err.message}`)
@@ -648,12 +906,32 @@ onUnmounted(() => {
 <template>
   <div class="content-panel">
     <div v-show="currentLevel === 'main'" class="main-content">
-      <div class="sync-header">
-        <div class="header-info">
-          <h2 class="section-title">数据同步</h2>
-          <p class="section-desc">
-            {{ loggedIn ? '自动同步设置和插件数据到所有设备' : '登录后可开启云同步' }}
-          </p>
+      <div class="sync-toolbar">
+        <div class="tab-group" role="tablist" aria-label="同步服务">
+          <button
+            type="button"
+            role="tab"
+            data-testid="sync-mode-official"
+            class="tab-btn"
+            :class="{ active: !isPrivateMode }"
+            :aria-selected="!isPrivateMode"
+            :disabled="deploymentSwitching || privateLoginLoading || privateLogoutLoading"
+            @click="handleDeploymentModeChange('official')"
+          >
+            官方服务
+          </button>
+          <button
+            type="button"
+            role="tab"
+            data-testid="sync-mode-private"
+            class="tab-btn"
+            :class="{ active: isPrivateMode }"
+            :aria-selected="isPrivateMode"
+            :disabled="deploymentSwitching || privateLoginLoading || privateLogoutLoading"
+            @click="handleDeploymentModeChange('private')"
+          >
+            私有部署
+          </button>
         </div>
         <div class="header-toggle">
           <span class="toggle-label">{{ syncEnabled ? '已启用' : '已禁用' }}</span>
@@ -661,12 +939,123 @@ onUnmounted(() => {
             <input
               v-model="syncEnabled"
               type="checkbox"
-              :disabled="!loggedIn"
+              :disabled="!loggedIn || deploymentSwitching || privateLogoutLoading"
               @change="handleSyncToggle"
             />
             <span class="toggle-slider"></span>
           </label>
         </div>
+      </div>
+
+      <div class="service-settings" data-testid="sync-service-settings">
+        <div v-if="!isPrivateMode" class="service-description">
+          <span>使用 ZTools 官方同步服务</span>
+          <span>{{ loggedIn ? `当前账号：${loggedUser}` : '请通过左下角登录 ZTools 账号' }}</span>
+        </div>
+
+        <div
+          v-if="isPrivateMode && privateSessionLoggedIn"
+          class="private-session-summary"
+          data-testid="private-sync-session"
+        >
+          <div class="private-session-details">
+            <div class="private-session-item">
+              <span class="private-session-label">同步服务器</span>
+              <span class="private-session-value" data-testid="private-sync-current-server">
+                {{ savedPrivateServerUrl }}
+              </span>
+            </div>
+            <div class="private-session-item">
+              <span class="private-session-label">当前登录用户</span>
+              <span class="private-session-value" data-testid="private-sync-current-user">
+                {{ savedPrivateUsername }}
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            data-testid="private-sync-logout"
+            class="btn btn-sm private-logout-button"
+            :disabled="privateLogoutLoading"
+            @click="handlePrivateLogout"
+          >
+            {{ privateLogoutLoading ? '注销中...' : '注销登录' }}
+          </button>
+        </div>
+
+        <form
+          v-else-if="isPrivateMode"
+          class="private-login-form"
+          @submit.prevent="handlePrivateLogin"
+        >
+          <div class="private-field private-server-field">
+            <label for="private-sync-server">服务器地址</label>
+            <div class="private-input-action">
+              <input
+                id="private-sync-server"
+                v-model.trim="privateServerUrl"
+                data-testid="private-sync-server"
+                class="input"
+                type="url"
+                inputmode="url"
+                autocomplete="url"
+                placeholder="https://sync.example.com"
+                @input="markPrivateFormDirty"
+              />
+              <button
+                type="button"
+                class="btn btn-sm"
+                :disabled="privateConnectionTesting || !privateServerUrl"
+                @click="handlePrivateConnectionTest"
+              >
+                {{ privateConnectionTesting ? '测试中...' : '测试连接' }}
+              </button>
+            </div>
+          </div>
+          <div class="private-field">
+            <label for="private-sync-username">用户名</label>
+            <input
+              id="private-sync-username"
+              v-model.trim="privateUsername"
+              data-testid="private-sync-username"
+              class="input"
+              type="text"
+              autocomplete="username"
+              placeholder="同步服务器账号"
+              @input="markPrivateFormDirty"
+            />
+          </div>
+          <div class="private-field">
+            <label for="private-sync-password">密码</label>
+            <input
+              id="private-sync-password"
+              v-model="privatePassword"
+              data-testid="private-sync-password"
+              class="input"
+              type="password"
+              autocomplete="current-password"
+              placeholder="输入密码"
+              @input="markPrivateFormDirty"
+            />
+          </div>
+          <div class="private-login-actions">
+            <span
+              v-if="privateConnectionMessage"
+              class="connection-message"
+              :class="{ success: privateConnectionSucceeded }"
+            >
+              {{ privateConnectionMessage }}
+            </span>
+            <button
+              type="submit"
+              data-testid="private-sync-login"
+              class="btn btn-solid btn-sm"
+              :disabled="privateLoginLoading"
+            >
+              {{ privateLoginLoading ? '登录中...' : '登录服务器' }}
+            </button>
+          </div>
+        </form>
       </div>
 
       <!-- ==================== 同步 ==================== -->
@@ -766,7 +1155,7 @@ onUnmounted(() => {
           <div class="setting-label">
             <span>重置同步状态</span>
             <span class="setting-desc"
-              >切换服务地址后使用：保留本地数据，清空本机同步进度并重新标记为待上传</span
+              >重置当前服务的本机进度，保留本地数据和其他服务的同步进度</span
             >
           </div>
           <div class="setting-control">
@@ -775,7 +1164,7 @@ onUnmounted(() => {
               :disabled="!loggedIn || resettingSyncState"
               @click="resetLocalSyncState"
             >
-              {{ resettingSyncState ? '重置中...' : '标记为未同步' }}
+              {{ resettingSyncState ? '重置中...' : '重置进度' }}
             </button>
           </div>
         </div>
@@ -929,25 +1318,13 @@ onUnmounted(() => {
   padding: 20px;
 }
 
-.sync-header {
+.sync-toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 0 16px;
+  gap: 20px;
+  margin-bottom: 20px;
   flex-shrink: 0;
-}
-
-.section-title {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--text-color);
-}
-
-.section-desc {
-  margin: 4px 0 0;
-  font-size: 13px;
-  color: var(--text-secondary);
 }
 
 .header-toggle {
@@ -955,6 +1332,180 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.tab-group {
+  display: flex;
+  gap: 6px;
+  background: var(--control-bg);
+  padding: 3px;
+  border-radius: 8px;
+}
+
+.tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 500;
+}
+
+.tab-btn:hover:not(:disabled) {
+  background: var(--hover-bg);
+  color: var(--text-color);
+}
+
+.tab-btn.active {
+  background: var(--active-bg);
+  color: var(--primary-color);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.tab-btn:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.service-settings {
+  padding: 0 0 20px;
+  border-bottom: 1px solid var(--divider-color);
+}
+
+.service-description {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.private-login-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+  align-items: end;
+}
+
+.private-session-summary {
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.private-session-details {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  gap: 48px;
+}
+
+.private-session-item {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.private-session-item:first-child {
+  flex: 1;
+}
+
+.private-session-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.private-session-value {
+  overflow-wrap: anywhere;
+  color: var(--text-color);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.private-logout-button {
+  flex: 0 0 auto;
+  color: var(--danger-color, #d03050);
+}
+
+.private-logout-button:hover:not(:disabled) {
+  background: var(--danger-light-bg, rgba(208, 48, 80, 0.08));
+  border-color: var(--danger-color, #d03050);
+}
+
+.private-server-field {
+  grid-column: 1 / -1;
+}
+
+.private-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.private-field label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.private-input-action {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.private-login-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.connection-message {
+  flex: 1;
+  color: var(--danger-color, #d03050);
+  font-size: 12px;
+}
+
+.connection-message.success {
+  color: var(--success-color, #18a058);
+}
+
+@media (max-width: 780px) {
+  .sync-toolbar {
+    gap: 12px;
+  }
+
+  .private-login-form {
+    grid-template-columns: 1fr;
+  }
+
+  .private-login-actions {
+    grid-column: 1;
+  }
+
+  .private-session-summary,
+  .private-session-details {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .private-logout-button {
+    align-self: flex-end;
+  }
 }
 
 .toggle-label {

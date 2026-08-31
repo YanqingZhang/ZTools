@@ -29,10 +29,7 @@ export function readUpdateMetadata(metadataPath) {
 export function selectMacUpdateZip(metadata, arch) {
   const files = Array.isArray(metadata.files) ? metadata.files : []
   const suffix = `-${arch}.zip`
-  const matches = files.filter((file) => {
-    const fileName = String(file?.url || '')
-    return fileName.endsWith(suffix) && !path.basename(fileName).startsWith('update-darwin-')
-  })
+  const matches = files.filter((file) => String(file?.url || '').endsWith(suffix))
 
   if (matches.length !== 1) {
     throw new Error(`macOS ${arch} 元数据必须包含且仅包含一个标准完整应用 ZIP`)
@@ -54,7 +51,7 @@ export function mergeMacUpdateMetadata(x64Metadata, arm64Metadata, releaseNotes)
     throw new Error('macOS x64 与 arm64 更新元数据版本不一致')
   }
 
-  // 仅把完整应用 ZIP 暴露给 Squirrel.Mac，legacy ASAR ZIP 继续由旧客户端拼接地址。
+  // 双架构清单仅暴露标准完整应用 ZIP，由 electron-updater 按运行架构选择。
   const x64Zip = selectMacUpdateZip(x64Metadata, 'x64')
   const arm64Zip = selectMacUpdateZip(arm64Metadata, 'arm64')
 
@@ -63,8 +60,7 @@ export function mergeMacUpdateMetadata(x64Metadata, arm64Metadata, releaseNotes)
     files: [x64Zip, arm64Zip],
     path: x64Zip.url,
     sha512: x64Zip.sha512,
-    releaseNotes,
-    changelog: releaseNotes
+    releaseNotes
   }
 }
 
@@ -77,8 +73,7 @@ export function mergeMacUpdateMetadata(x64Metadata, arm64Metadata, releaseNotes)
 export function withReleaseNotes(metadata, releaseNotes) {
   return {
     ...metadata,
-    releaseNotes,
-    changelog: releaseNotes
+    releaseNotes
   }
 }
 

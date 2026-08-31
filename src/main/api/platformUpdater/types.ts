@@ -8,6 +8,16 @@ export interface PlatformUpdateInfo {
   manualDownloadRequired?: boolean
   migrationRequired?: boolean
   releaseUrl?: string
+  feedUrl?: string
+  sources?: UpdateDownloadSource[]
+}
+
+export interface UpdateDownloadSource {
+  id: number
+  platformName: string
+  downloadUrl: string
+  isDirect: boolean
+  feedUrl?: string
 }
 
 export interface PlatformUpdateResult {
@@ -25,6 +35,7 @@ export interface PlatformUpdateResult {
 
 export interface PlatformUpdateActionResult {
   success: boolean
+  cancelled?: boolean
   migrationRequired?: boolean
   error?: string
 }
@@ -39,6 +50,7 @@ export interface PlatformDownloadStatus {
 export interface PlatformUpdaterCallbacks {
   onDownloadStart: (info: { version: string }) => void
   onDownloadProgress: (info: ProgressInfo) => void
+  onDownloadCancelled: () => void
   onDownloaded: (info: PlatformUpdateInfo, showWindow: boolean) => void
   onDownloadFailed: (error: string) => void
   onBeforeInstall: () => void
@@ -48,6 +60,7 @@ export interface PlatformUpdaterService {
   initialize(): Promise<void>
   checkForUpdates(downloadWhenAvailable: boolean): Promise<PlatformUpdateResult>
   startUpdate(updateInfo?: PlatformUpdateInfo): Promise<PlatformUpdateActionResult>
+  cancelUpdate(): Promise<PlatformUpdateActionResult> | PlatformUpdateActionResult
   installDownloadedUpdate(): Promise<PlatformUpdateActionResult> | PlatformUpdateActionResult
   getDownloadStatus(): PlatformDownloadStatus
   cleanup(): void

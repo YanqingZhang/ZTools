@@ -18,8 +18,17 @@ export function focusAccessibilityPermissionWindow(): boolean {
   return true
 }
 
+/**
+ * 确保 macOS 辅助功能权限已授予，E2E 模式下跳过系统权限交互。
+ *
+ * @returns 权限满足或测试模式跳过后结束的 Promise。
+ */
 export async function ensureMacAccessibilityPermission(): Promise<void> {
-  if (process.platform !== 'darwin' || systemPreferences.isTrustedAccessibilityClient(false)) {
+  if (
+    process.env.ZTOOLS_E2E === '1' ||
+    process.platform !== 'darwin' ||
+    systemPreferences.isTrustedAccessibilityClient(false)
+  ) {
     return
   }
 

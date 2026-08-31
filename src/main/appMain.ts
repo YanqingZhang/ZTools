@@ -1,10 +1,10 @@
-import './core/appData/configureAppDataRoot'
 import { platform } from '@electron-toolkit/utils'
 import { app, BrowserWindow, session, webContents } from 'electron'
 import log from 'electron-log'
 import path from 'path'
 import lmdbInstance from './core/lmdb/lmdbInstance'
 import api from './api/index'
+import updaterAPI from './api/updater'
 import appsAPI from './api/renderer/commands'
 import pluginsAPI from './api/renderer/plugins'
 import appWatcher from './appWatcher'
@@ -26,6 +26,8 @@ import { getLogsPath } from './core/appData/appDataPaths'
 import { loadInternalPlugins } from './core/internalPluginLoader'
 import pluginManager from './managers/pluginManager'
 import windowManager from './managers/windowManager'
+
+const isE2ETest = process.env.ZTOOLS_E2E === '1'
 
 // 待打开的 .zpx 文件路径（在 app.ready 之前收到的文件打开事件）
 let pendingZpxFile: string | null = null
@@ -143,25 +145,33 @@ app.whenReady().then(async () => {
   // 创建主窗口
   const mainWindow = windowManager.createWindow()
 
+  if (isE2ETest) {
+    // 测试模式直接展示窗口，让自动化驱动无需依赖全局快捷键。
+    mainWindow.once('ready-to-show', () => windowManager.showWindow())
+  }
+
   // 初始化 API 和插件管理器
   if (mainWindow) {
     api.init(mainWindow, pluginManager)
+    activityHeartbeatService.setUpdateHandler((update) => updaterAPI.handleHeartbeatUpdate(update))
     pluginManager.init(mainWindow)
-    // 首次应用列表准备完成后再初始化应用目录监听器，避免启动时与应用扫描抢占磁盘 I/O
-    appsAPI.setAfterFirstAppsReadyCallback(() => {
-      appWatcher.init(mainWindow)
-    })
-    activityHeartbeatService.start()
+    if (!isE2ETest) {
+      // 首次应用列表准备完成后再初始化应用目录监听器，避免启动时与应用扫描抢占磁盘 I/O。
+      appsAPI.setAfterFirstAppsReadyCallback(() => {
+        appWatcher.init(mainWindow)
+      })
+      activityHeartbeatService.start()
+    }
   }
 
   // 注册全局快捷键
-  windowManager.registerShortcut()
+  if (!isE2ETest) windowManager.registerShortcut()
 
   // 初始化悬浮球（从配置决定是否显示）
-  await floatingBallManager.init()
+  if (!isE2ETest) await floatingBallManager.init()
 
   // 自动启动已配置的"跟随主程序同时启动运行"的插件
-  if (mainWindow) {
+  if (mainWindow && !isE2ETest) {
     try {
       const autoStartPlugins = api.dbGet('auto-start-plugin')
       const disabledPlugins = pluginsAPI.getDisabledPluginSet()
@@ -227,6 +237,9 @@ app.on('will-quit', () => {
 })
 
 app.on('before-quit', (event) => {
+  // 自动化关闭应用时不拦截退出流程，避免测试进程残留。
+  if (isE2ETest) return
+
   // 检查是否是通过托盘菜单主动退出
   if (!windowManager.getQuitting()) {
     // 不是主动退出（如 Command+Q），阻止退出

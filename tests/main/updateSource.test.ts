@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
+  getDefaultUpdateSourceID,
   getGitHubReleaseUrl,
   GITHUB_LATEST_RELEASE_URL,
   GITHUB_RELEASES_URL,
-  GITHUB_REPOSITORY_URL
+  GITHUB_REPOSITORY_URL,
+  isInAppUpdateSource
 } from '../../src/shared/updateSource'
 
 describe('GitHub update source', () => {
@@ -18,5 +20,37 @@ describe('GitHub update source', () => {
     expect(getGitHubReleaseUrl('3.1.0-beta.2')).toBe(
       'https://github.com/ZToolsCenter/ZTools/releases/tag/v3.1.0-beta.2'
     )
+  })
+
+  it('prefers GitHub as the default update channel', () => {
+    expect(
+      getDefaultUpdateSourceID([
+        { id: 2, platformName: '夸克网盘', isDirect: false },
+        { id: 1, platformName: 'GitHub', isDirect: true, feedUrl: 'https://example.com/feed/' }
+      ])
+    ).toBe(1)
+  })
+
+  it('falls back to the first source when GitHub is unavailable', () => {
+    expect(
+      getDefaultUpdateSourceID([
+        { id: 8, platformName: '夸克网盘', isDirect: false },
+        { id: 9, platformName: '其他渠道', isDirect: false }
+      ])
+    ).toBe(8)
+    expect(getDefaultUpdateSourceID([])).toBeNull()
+  })
+
+  it('requires both a direct flag and feed URL for in-app updates', () => {
+    expect(
+      isInAppUpdateSource({
+        id: 1,
+        platformName: 'GitHub',
+        isDirect: true,
+        feedUrl: 'https://example.com/feed/'
+      })
+    ).toBe(true)
+    expect(isInAppUpdateSource({ id: 2, platformName: '夸克网盘', isDirect: false })).toBe(false)
+    expect(isInAppUpdateSource({ id: 3, platformName: 'GitHub', isDirect: true })).toBe(false)
   })
 })
